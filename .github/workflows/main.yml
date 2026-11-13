@@ -1,0 +1,51 @@
+name: Build Kingdom Chess APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "kingdom-chess.zip"
+      - ".github/workflows/build-apk.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract project
+        run: |
+          mkdir extracted
+          unzip -o kingdom-chess.zip -d extracted
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36
+        run: |
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Find Android project
+        run: |
+          ANDROID_DIR=$(find extracted -type f -name gradlew -print -quit | xargs dirname)
+          echo "ANDROID_DIR=$ANDROID_DIR" >> $GITHUB_ENV
+
+      - name: Build APK
+        run: |
+          cd "$ANDROID_DIR"
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kingdom-Chess-APK
+          path: "**/build/outputs/apk/debug/*.apk"
