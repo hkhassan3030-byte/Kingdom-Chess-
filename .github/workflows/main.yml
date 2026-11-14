@@ -46,6 +46,7 @@ jobs:
 
           if [ -f package.json ]; then
             npm install --legacy-peer-deps
+            npm run build 
             npx cap sync android
           else
             echo "No package.json found; using existing Android project."
