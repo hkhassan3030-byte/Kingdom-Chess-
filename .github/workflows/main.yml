@@ -26,6 +26,31 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Find project
+        run: |
+          PROJECT_DIR=$(find extracted -name package.json -type f -print -quit | xargs dirname)
+          if [ -z "$PROJECT_DIR" ]; then
+            PROJECT_DIR=$(find extracted -name gradlew -type f -print -quit | xargs dirname)
+          fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project: $PROJECT_DIR"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install npm dependencies and sync Capacitor
+        run: |
+          cd "$PROJECT_DIR"
+
+          if [ -f package.json ]; then
+            npm install
+            npx cap sync android
+          else
+            echo "No package.json found; using existing Android project."
+          fi
+
       - name: Setup Android SDK
         run: |
           export ANDROID_HOME=/usr/local/lib/android/sdk
@@ -42,7 +67,7 @@ jobs:
 
       - name: Find Android project
         run: |
-          ANDROID_DIR=$(find extracted -type f -name gradlew -print -quit | xargs dirname)
+          ANDROID_DIR=$(find "$PROJECT_DIR" -name gradlew -type f -print -quit | xargs dirname)
           echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
           echo "Android project: $ANDROID_DIR"
 
