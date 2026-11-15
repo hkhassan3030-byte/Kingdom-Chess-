@@ -1,0 +1,6 @@
+{
+  "name": "Kingdom Chess",
+  "description": "A mobile-friendly 3D fantasy chess game with detailed human character pieces, battlefield terrain, and cinematic capture combat.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

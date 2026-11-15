@@ -1,0 +1,181 @@
+name: Build Google Play Release AAB
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Optional override for Android versionName (defaults to android/gradle.properties)'
+        required: false
+        default: ''
+      version_code:
+        description: 'Optional override for Android versionCode (defaults to android/gradle.properties)'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-aab:
+    name: Build Signed Play Store AAB
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract Kingdom Chess ZIP project (if stored as ZIP archive)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f package.json ]; then
+            ZIP_FILE=$(find . -maxdepth 2 -type f -name '*.zip' | head -n 1 || true)
+            if [ -z "$ZIP_FILE" ]; then
+              echo "::error::Neither package.json nor a project ZIP archive was found in repository."
+              exit 1
+            fi
+            EXTRACT_DIR="$RUNNER_TEMP/extracted-project"
+            rm -rf "$EXTRACT_DIR"
+            mkdir -p "$EXTRACT_DIR"
+            unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
+            if [ -f "$EXTRACT_DIR/package.json" ]; then
+              SRC_DIR="$EXTRACT_DIR"
+            else
+              NESTED_PKG=$(find "$EXTRACT_DIR" -maxdepth 2 -name 'package.json' | head -n 1 || true)
+              if [ -z "$NESTED_PKG" ]; then
+                echo "::error::Extracted ZIP does not contain package.json."
+                exit 1
+              fi
+              SRC_DIR=$(dirname "$NESTED_PKG")
+            fi
+            cp -a "$SRC_DIR"/. .
+            rm -rf "$EXTRACT_DIR"
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install web and Capacitor dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build production web bundle
+        shell: bash
+        env:
+          INPUT_VERSION_CODE: ${{ github.event.inputs.version_code }}
+          INPUT_VERSION_NAME: ${{ github.event.inputs.version_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_VERSION_CODE:-}" ]; then
+            export ANDROID_VERSION_CODE="$INPUT_VERSION_CODE"
+          fi
+          if [ -n "${INPUT_VERSION_NAME:-}" ]; then
+            export ANDROID_VERSION_NAME="$INPUT_VERSION_NAME"
+          fi
+          npx tsc --noEmit
+          npm run build
+
+      - name: Sync Capacitor Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx cap sync android
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle caching
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-home-cache-cleanup: true
+
+      - name: Load Play Store signing keystore from GitHub Secrets
+        id: signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 || secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS_VAL: ${{ secrets.KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set +x
+          set -euo pipefail
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KEYSTORE_PASS" ] || [ -z "$KEY_ALIAS_VAL" ] || [ -z "$KEY_PASS" ]; then
+            echo "::error::Missing required GitHub Secrets: KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD."
+            exit 1
+          fi
+          KEYSTORE_PATH="$RUNNER_TEMP/kingdom-chess-release.jks"
+          printf '%s' "$KEYSTORE_B64" | tr -d '\r\n' | base64 --decode > "$KEYSTORE_PATH"
+          chmod 600 "$KEYSTORE_PATH"
+          echo "::add-mask::$KEYSTORE_PATH"
+          echo "keystore_path=$KEYSTORE_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed Release App Bundle (.aab)
+        working-directory: android
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ steps.signing.outputs.keystore_path }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
+          INPUT_VERSION_CODE: ${{ github.event.inputs.version_code }}
+          INPUT_VERSION_NAME: ${{ github.event.inputs.version_name }}
+        run: |
+          set +x
+          set -euo pipefail
+          chmod +x ./gradlew
+          if [ -n "${INPUT_VERSION_CODE:-}" ]; then
+            export ANDROID_VERSION_CODE="$INPUT_VERSION_CODE"
+          fi
+          if [ -n "${INPUT_VERSION_NAME:-}" ]; then
+            export ANDROID_VERSION_NAME="$INPUT_VERSION_NAME"
+          fi
+          ./gradlew bundleRelease --no-daemon
+
+      - name: Verify signed AAB output
+        shell: bash
+        run: |
+          set -euo pipefail
+          AAB_PATH="android/app/build/outputs/bundle/release/app-release.aab"
+          if [ ! -f "$AAB_PATH" ]; then
+            echo "::error::Expected release AAB not found at $AAB_PATH"
+            exit 1
+          fi
+          jarsigner -verify "$AAB_PATH"
+          CERT_INFO=$(keytool -printcert -jarfile "$AAB_PATH")
+          if echo "$CERT_INFO" | grep -qi "Android Debug"; then
+            echo "::error::AAB appears to be signed with the Android Debug certificate!"
+            exit 1
+          fi
+          ls -lh "$AAB_PATH"
+
+      - name: Upload signed app-release.aab artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kingdom-chess-play-release-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Cleanup temporary keystore file
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/kingdom-chess-release.jks"
