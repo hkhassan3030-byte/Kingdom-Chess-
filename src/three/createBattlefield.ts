@@ -154,6 +154,23 @@ export function createBattlefield(bank: SceneMaterialBank): BattlefieldRefs {
   trimMesh.receiveShadow = true;
   group.add(trimMesh);
 
+  const cornerOffset = BOARD_SPAN / 2 + 0.04;
+  const cornerBaseGeo = new THREE.BoxGeometry(0.18, 0.055, 0.18);
+  const cornerParts: THREE.BufferGeometry[] = [];
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const c = cornerBaseGeo.clone();
+      c.translate(sx * cornerOffset, 0.008, sz * cornerOffset);
+      cornerParts.push(c);
+    }
+  }
+  cornerBaseGeo.dispose();
+  const mergedCornerGeo = trackGeo(mergeGeometries(cornerParts, false)!);
+  for (const p of cornerParts) p.dispose();
+  const cornerFinials = new THREE.Mesh(mergedCornerGeo, bank.boardGoldTrim);
+  cornerFinials.receiveShadow = true;
+  group.add(cornerFinials);
+
   // 4. 64 Tiles rendered via 2 InstancedMeshes (2 draw calls total!) + Invisible Layer 1 Hit Planes
   const tileGeo = trackGeo(new THREE.BoxGeometry(TILE_SIZE - 0.014, 0.1, TILE_SIZE - 0.014));
   const lightTilesInst = new THREE.InstancedMesh(tileGeo, bank.lightTile, 32);

@@ -48,6 +48,70 @@ const BOARD_CENTER_TARGET = new THREE.Vector3(0, 0.12, 0);
 const CAMERA_PITCH_RAD = THREE.MathUtils.degToRad(68); // Higher 68° top-down isometric view (65–75°)
 const CAMERA_YAW_RAD = THREE.MathUtils.degToRad(8); // Slight 8° isometric angle toward the battlefield
 
+interface KingdomArenaTheme {
+  bg: number;
+  fog: number;
+  key: number;
+  fillRim: number;
+  trim: number;
+  moat: number;
+  flame: number;
+  ember: number;
+}
+
+const KINGDOM_ARENA_THEMES: Record<CharacterSetId, KingdomArenaTheme> = {
+  human: {
+    bg: 0x131a28,
+    fog: 0x161f2f,
+    key: 0xcce0ff,
+    fillRim: 0xffe1c4,
+    trim: 0xc29e60,
+    moat: 0x0c1d2b,
+    flame: 0xffa638,
+    ember: 0xff5a12,
+  },
+  titan: {
+    bg: 0x101922,
+    fog: 0x15212a,
+    key: 0xd4eaf5,
+    fillRim: 0xc2e6d0,
+    trim: 0xa49262,
+    moat: 0x0a1e22,
+    flame: 0xffb35c,
+    ember: 0xf97316,
+  },
+  inferno: {
+    bg: 0x191218,
+    fog: 0x22161b,
+    key: 0xebd4cc,
+    fillRim: 0xffab75,
+    trim: 0xc97f3c,
+    moat: 0x181014,
+    flame: 0xff8a24,
+    ember: 0xff3b0f,
+  },
+  shadow: {
+    bg: 0x121324,
+    fog: 0x18172f,
+    key: 0xc9d4fe,
+    fillRim: 0xc7b8fd,
+    trim: 0x8e82b2,
+    moat: 0x0d1226,
+    flame: 0xa78bfa,
+    ember: 0x7c3aed,
+  },
+  celestial: {
+    bg: 0x101c30,
+    fog: 0x162640,
+    key: 0xe3f0ff,
+    fillRim: 0xfde68a,
+    trim: 0xd8b254,
+    moat: 0x0c2238,
+    flame: 0x7dd3fc,
+    ember: 0x0ea5e9,
+  },
+};
+
 interface ActiveMoveAnim {
   payload: MoveAnimationPayload;
   attacker: CharacterRig;
@@ -80,6 +144,9 @@ export class ChessSceneController {
   private clock = new THREE.Clock();
   private frameId = 0;
   private disposed = false;
+  private contextLost = false;
+  private isPausedHidden = typeof document !== 'undefined' ? document.hidden : false;
+  private envRT: THREE.WebGLRenderTarget | null = null;
   private matchEpoch = 0;
 
   private materials: SceneMaterialBank;
@@ -87,6 +154,10 @@ export class ChessSceneController {
   private gltfProvider = new CharacterGLTFProvider();
   private battlefield: BattlefieldRefs;
   private keyLight: THREE.DirectionalLight;
+  private fillRimLight: THREE.DirectionalLight;
+  private resizeObserver: ResizeObserver | null = null;
+  private motionQuery: MediaQueryList | null = null;
+  private prefersReducedMotion = false;
 
   private piecesGroup = new THREE.Group();
   private highlightsGroup = new THREE.Group();
@@ -199,7 +270,10 @@ export class ChessSceneController {
     this.scene.fog = this.sceneFog;
 
     const pmremGenerator = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+    const roomEnv = new RoomEnvironment();
+    this.envRT = pmremGenerator.fromScene(roomEnv, 0.04);
+    roomEnv.dispose();
+    this.scene.environment = this.envRT.texture;
     this.scene.environmentIntensity = 0.72;
     pmremGenerator.dispose();
 
@@ -240,8 +314,8 @@ export class ChessSceneController {
     this.keyLight = new THREE.DirectionalLight(0xcce0ff, 2.0);
     this.keyLight.position.set(10.0, 14.5, 7.5);
     this.keyLight.castShadow = !this.isSoftwareGl;
-    this.keyLight.shadow.mapSize.width = 768;
-    this.keyLight.shadow.mapSize.height = 768;
+    this.keyLight.shadow.mapSize.width = 1024;
+    this.keyLight.shadow.mapSize.height = 1024;
     this.keyLight.shadow.camera.near = 2;
     this.keyLight.shadow.camera.far = 34;
     const d = 5.8;
@@ -249,18 +323,19 @@ export class ChessSceneController {
     this.keyLight.shadow.camera.right = d;
     this.keyLight.shadow.camera.top = d;
     this.keyLight.shadow.camera.bottom = -d;
-    this.keyLight.shadow.bias = -0.0008;
-    this.keyLight.shadow.normalBias = 0.032;
+    this.keyLight.shadow.bias = -0.0007;
+    this.keyLight.shadow.normalBias = 0.028;
     this.scene.add(this.keyLight);
 
-    const fillRimLight = new THREE.DirectionalLight(0xffe1c4, 1.05);
-    fillRimLight.position.set(-6.5, 6.2, -8.0);
-    this.scene.add(fillRimLight);
+    this.fillRimLight = new THREE.DirectionalLight(0xffe1c4, 1.05);
+    this.fillRimLight.position.set(-6.5, 6.2, -8.0);
+    this.scene.add(this.fillRimLight);
 
     // Build Battlefield, Material Bank, Character Geo Bank
     this.materials = createSceneMaterialBank(this.renderer, this.characterSet);
     this.charGeos = createCharacterGeometryBank();
     this.battlefield = createBattlefield(this.materials);
+    this.applyKingdomAtmosphere(this.characterSet);
     this.scene.add(this.battlefield.group);
     this.scene.add(this.highlightsGroup);
     this.scene.add(this.piecesGroup);
@@ -385,8 +460,39 @@ export class ChessSceneController {
 
     this.controls.update();
     this.bindEvents();
-    this.tick();
+    if (!this.isPausedHidden) {
+      this.tick();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
+
+  private applyKingdomAtmosphere(setId: CharacterSetId) {
+    const theme = KINGDOM_ARENA_THEMES[setId];
+    if (this.scene.background instanceof THREE.Color) {
+      this.scene.background.setHex(theme.bg);
+    }
+    this.sceneFog.color.setHex(theme.fog);
+    this.keyLight.color.setHex(theme.key);
+    this.fillRimLight.color.setHex(theme.fillRim);
+    this.materials.boardGoldTrim.color.setHex(theme.trim);
+    this.materials.waterMoat.color.setHex(theme.moat);
+    this.materials.brazierFlame.color.setHex(theme.flame);
+    this.materials.brazierEmber.emissive.setHex(theme.ember);
+    const emberMat = this.battlefield.embers.material as THREE.PointsMaterial;
+    emberMat.color.setHex(theme.flame);
+  }
+
+  private handleMotionChange = (e: MediaQueryListEvent) => {
+    this.prefersReducedMotion = e.matches;
+    if (this.prefersReducedMotion) {
+      this.selectedRing.scale.set(1, 1, 1);
+      this.selectedRing.updateMatrix();
+      this.checkRing.scale.set(1, 1, 1);
+      this.checkRing.updateMatrix();
+      this.highlightsGroup.updateMatrixWorld(true);
+    }
+  };
 
   private bindEvents() {
     const dom = this.renderer.domElement;
@@ -398,8 +504,38 @@ export class ChessSceneController {
     window.addEventListener('blur', this.handleWindowBlur);
     dom.addEventListener('webglcontextlost', this.handleContextLost);
     dom.addEventListener('webglcontextrestored', this.handleContextRestored);
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
     window.addEventListener('resize', this.handleResize);
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(this.handleResize);
+      this.resizeObserver.observe(this.container);
+    }
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+      this.motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+      this.prefersReducedMotion = this.motionQuery.matches;
+      this.motionQuery.addEventListener('change', this.handleMotionChange);
+    }
   }
+
+  private stopLoop() {
+    cancelAnimationFrame(this.frameId);
+    clearTimeout(this.frameId);
+    this.frameId = 0;
+  }
+
+  private handleVisibilityChange = () => {
+    if (document.hidden) {
+      this.isPausedHidden = true;
+      this.stopLoop();
+    } else {
+      this.isPausedHidden = false;
+      if (!this.disposed && !this.contextLost) {
+        this.clock.getDelta();
+        this.stopLoop();
+        this.tick();
+      }
+    }
+  };
 
   private handleWindowPointerCleanup = (e: PointerEvent) => {
     this.activePointers.delete(e.pointerId);
@@ -415,10 +551,20 @@ export class ChessSceneController {
 
   private handleContextLost = (e: Event) => {
     e.preventDefault();
+    this.contextLost = true;
+    this.stopLoop();
     this.onContextLostCallback?.();
   };
 
   private handleContextRestored = () => {
+    this.contextLost = false;
+    if (this.disposed) return;
+    this.handleResize();
+    if (!this.isPausedHidden) {
+      this.clock.getDelta();
+      this.stopLoop();
+      this.tick();
+    }
     this.onContextRestoredCallback?.();
   };
 
@@ -771,6 +917,7 @@ export class ChessSceneController {
     this.raycastTargets.length = 0;
 
     this.materials.switchCharacterSet(nextSet);
+    this.applyKingdomAtmosphere(nextSet);
     this.characterSet = nextSet;
 
     if (this.lastBoardPieces.length > 0) {
@@ -847,6 +994,7 @@ export class ChessSceneController {
       this.selectedRing.visible = true;
     } else {
       this.selectedRing.visible = false;
+      this.selectedRing.scale.set(1, 1, 1);
     }
 
     if (params.checkSquare) {
@@ -1311,6 +1459,14 @@ export class ChessSceneController {
         this.rebuildRaycastTargets();
       }
 
+      if (payload.promotion) {
+        const promoColor = payload.color === 'w' ? 0xfde047 : 0xc084fc;
+        _v1.copy(anim.toPos).setY(0.95);
+        this.combatEffects.spawnImpactFlash(_v1, promoColor, 1.85);
+        this.combatEffects.spawnShockwave(anim.toPos, promoColor, 2.8, 0.16);
+        this.combatEffects.spawnSparks(_v1, 0xfef08a, 14);
+      }
+
       if (anim.duelCtx) {
         this.camera.position.copy(anim.duelCtx.savedCamPos);
         this.controls.target.copy(anim.duelCtx.savedTarget);
@@ -1327,42 +1483,55 @@ export class ChessSceneController {
   }
 
   private updateEnvironment(elapsed: number, dt: number) {
-    this.materials.waterNormalMap.offset.x = (this.materials.waterNormalMap.offset.x + dt * 0.015) % 1;
-    this.materials.waterNormalMap.offset.y = (this.materials.waterNormalMap.offset.y + dt * 0.01) % 1;
+    if (!this.prefersReducedMotion) {
+      this.materials.waterNormalMap.offset.x =
+        (this.materials.waterNormalMap.offset.x + dt * 0.015) % 1;
+      this.materials.waterNormalMap.offset.y =
+        (this.materials.waterNormalMap.offset.y + dt * 0.01) % 1;
 
-    const flameInst = this.battlefield.brazierFlameInst;
-    const flameSpecs = this.battlefield.brazierFlameSpecs;
-    for (let i = 0; i < flameSpecs.length; i++) {
-      const spec = flameSpecs[i];
-      const f = 1 + Math.sin(elapsed * 9.5 + i * 1.7) * 0.13;
-      _flameDummy.position.set(spec.x, spec.y, spec.z);
-      _flameDummy.rotation.set(0, elapsed * 1.8 + i, 0);
-      _flameDummy.scale.set(spec.scaleXZ * f, spec.scaleY * f, spec.scaleXZ * f);
-      _flameDummy.updateMatrix();
-      flameInst.setMatrixAt(i, _flameDummy.matrix);
-    }
-    flameInst.instanceMatrix.needsUpdate = true;
-
-    const posAttr = this.battlefield.embers.geometry.getAttribute('position') as THREE.BufferAttribute;
-    const arr = posAttr.array as Float32Array;
-    const vels = this.battlefield.emberVelocities;
-    for (let i = 0; i < arr.length; i += 3) {
-      arr[i] += vels[i] * dt + Math.sin(elapsed + i) * 0.002;
-      arr[i + 1] += vels[i + 1] * dt;
-      arr[i + 2] += vels[i + 2] * dt;
-      if (arr[i + 1] > 6.0) {
-        arr[i] = (Math.random() - 0.5) * 16;
-        arr[i + 1] = 0.2;
-        arr[i + 2] = (Math.random() - 0.5) * 16;
+      const flameInst = this.battlefield.brazierFlameInst;
+      const flameSpecs = this.battlefield.brazierFlameSpecs;
+      for (let i = 0; i < flameSpecs.length; i++) {
+        const spec = flameSpecs[i];
+        const f = 1 + Math.sin(elapsed * 9.5 + i * 1.7) * 0.13;
+        _flameDummy.position.set(spec.x, spec.y, spec.z);
+        _flameDummy.rotation.set(0, elapsed * 1.8 + i, 0);
+        _flameDummy.scale.set(spec.scaleXZ * f, spec.scaleY * f, spec.scaleXZ * f);
+        _flameDummy.updateMatrix();
+        flameInst.setMatrixAt(i, _flameDummy.matrix);
       }
-    }
-    posAttr.needsUpdate = true;
+      flameInst.instanceMatrix.needsUpdate = true;
 
-    if (this.checkRing.visible) {
-      const s = 1 + Math.sin(elapsed * 5.2) * 0.08;
-      this.checkRing.scale.set(s, s, 1);
-      this.checkRing.updateMatrix();
-      this.checkRing.updateMatrixWorld(true);
+      const posAttr = this.battlefield.embers.geometry.getAttribute(
+        'position'
+      ) as THREE.BufferAttribute;
+      const arr = posAttr.array as Float32Array;
+      const vels = this.battlefield.emberVelocities;
+      for (let i = 0; i < arr.length; i += 3) {
+        arr[i] += vels[i] * dt + Math.sin(elapsed + i) * 0.002;
+        arr[i + 1] += vels[i + 1] * dt;
+        arr[i + 2] += vels[i + 2] * dt;
+        if (arr[i + 1] > 6.0) {
+          arr[i] = (Math.random() - 0.5) * 16;
+          arr[i + 1] = 0.2;
+          arr[i + 2] = (Math.random() - 0.5) * 16;
+        }
+      }
+      posAttr.needsUpdate = true;
+
+      if (this.selectedRing.visible) {
+        const sp = 1 + Math.sin(elapsed * 4.2) * 0.045;
+        this.selectedRing.scale.set(sp, sp, 1);
+        this.selectedRing.updateMatrix();
+        this.selectedRing.updateMatrixWorld(true);
+      }
+
+      if (this.checkRing.visible) {
+        const s = 1 + Math.sin(elapsed * 5.2) * 0.08;
+        this.checkRing.scale.set(s, s, 1);
+        this.checkRing.updateMatrix();
+        this.checkRing.updateMatrixWorld(true);
+      }
     }
 
     this.combatEffects.update(dt);
@@ -1373,7 +1542,7 @@ export class ChessSceneController {
     const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
     gl.flush();
     const poll = () => {
-      if (this.disposed) {
+      if (this.disposed || this.contextLost || this.isPausedHidden) {
         if (sync) gl.deleteSync(sync);
         return;
       }
@@ -1389,7 +1558,7 @@ export class ChessSceneController {
   }
 
   private tick = () => {
-    if (this.disposed) return;
+    if (this.disposed || this.contextLost || this.isPausedHidden) return;
 
     const tickStart = import.meta.env.DEV ? performance.now() : 0;
     const dt = Math.min(this.clock.getDelta(), 0.05);
@@ -1450,8 +1619,7 @@ export class ChessSceneController {
 
   public dispose() {
     this.disposed = true;
-    cancelAnimationFrame(this.frameId);
-    clearTimeout(this.frameId);
+    this.stopLoop();
 
     const dom = this.renderer.domElement;
     dom.removeEventListener('pointerdown', this.handlePointerDown);
@@ -1462,7 +1630,12 @@ export class ChessSceneController {
     window.removeEventListener('blur', this.handleWindowBlur);
     dom.removeEventListener('webglcontextlost', this.handleContextLost);
     dom.removeEventListener('webglcontextrestored', this.handleContextRestored);
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     window.removeEventListener('resize', this.handleResize);
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    this.motionQuery?.removeEventListener('change', this.handleMotionChange);
+    this.motionQuery = null;
 
     for (let i = 0; i < this.activeRigs.length; i++) {
       const geos = this.activeRigs[i].disposableGeos;
@@ -1485,6 +1658,9 @@ export class ChessSceneController {
     this.charGeos.dispose();
     this.gltfProvider.dispose();
     this.materials.dispose();
+    this.envRT?.dispose();
+    this.envRT = null;
+    this.scene.environment = null;
     this.renderer.dispose();
 
     if (dom.parentElement === this.container) {

@@ -39,11 +39,11 @@ export function GameOverModal({
   const reasonText = (() => {
     switch (status.reason) {
       case 'checkmate':
-        return 'Decisive Victory by Checkmate';
+        return isAIDefeat ? 'Defeat by Checkmate' : 'Decisive Victory by Checkmate';
       case 'resignation':
-        return 'Match Concluded by Resignation';
+        return isAIDefeat ? 'You Resigned the Match' : 'Match Concluded by Resignation';
       case 'timeout':
-        return 'Victory on Time';
+        return isAIDefeat ? 'Defeat — Time Expired' : 'Victory on Time';
       case 'stalemate':
         return 'Stalemate — No Legal Moves Remaining';
       case 'repetition':
@@ -69,8 +69,8 @@ export function GameOverModal({
     TIME_CONTROLS.find((t) => t.seconds === settings.timeControlSeconds)?.label ?? '10 MIN';
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/75 p-4">
-      <div className="fantasy-panel w-full max-w-md rounded-2xl p-6 text-center">
+    <div className="animate-modal-backdrop fixed inset-0 z-40 flex items-center justify-center bg-black/75 p-4">
+      <div className="fantasy-panel animate-modal-panel w-full max-w-md rounded-2xl p-6 text-center">
         <div
           className={`mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border ${
             isDraw

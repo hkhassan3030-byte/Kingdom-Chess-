@@ -31,12 +31,19 @@ export function ModePreviewCanvas({ mode, delayMs = 0 }: ModePreviewCanvasProps)
     const initScene = () => {
       if (disposed) return;
 
+      const motionQuery =
+        typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+          ? window.matchMedia('(prefers-reduced-motion: reduce)')
+          : null;
+      let prefersReducedMotion = Boolean(motionQuery?.matches);
+
       const isSoftwareGl = isSoftwareGlRenderer();
 
       const renderer = new THREE.WebGLRenderer({
         antialias: !isSoftwareGl,
         alpha: true,
         powerPreference: 'high-performance',
+        stencil: false,
       });
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -55,8 +62,11 @@ export function ModePreviewCanvas({ mode, delayMs = 0 }: ModePreviewCanvasProps)
       scene.background = new THREE.Color(mode === 'pvp' ? 0x101726 : 0x131424);
 
       const pmrem = new THREE.PMREMGenerator(renderer);
-      scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      const roomEnv = new RoomEnvironment();
+      const envRT = pmrem.fromScene(roomEnv, 0.04);
+      scene.environment = envRT.texture;
       scene.environmentIntensity = 0.7;
+      roomEnv.dispose();
       pmrem.dispose();
 
       const camera = new THREE.PerspectiveCamera(36, w / h, 0.2, 40);
@@ -143,8 +153,46 @@ export function ModePreviewCanvas({ mode, delayMs = 0 }: ModePreviewCanvasProps)
         camera.aspect = rw / rh;
         camera.updateProjectionMatrix();
         renderer.setSize(rw, rh);
+        if (prefersReducedMotion) {
+          renderer.render(scene, camera);
+        }
       };
       window.addEventListener('resize', handleResize);
+      const resizeObserver =
+        typeof ResizeObserver !== 'undefined' ? new ResizeObserver(handleResize) : null;
+      resizeObserver?.observe(container);
+
+      let contextLost = false;
+      let isPausedHidden = typeof document !== 'undefined' ? document.hidden : false;
+
+      const stopLoop = () => {
+        cancelAnimationFrame(frameId);
+        clearTimeout(frameId);
+        frameId = 0;
+      };
+
+      const handleContextLost = (e: Event) => {
+        e.preventDefault();
+        contextLost = true;
+        stopLoop();
+      };
+      const handleContextRestored = () => {
+        if (disposed) return;
+        contextLost = false;
+        handleResize();
+        if (!isPausedHidden) {
+          clock.getDelta();
+          stopLoop();
+          tick();
+        }
+      };
+      renderer.domElement.addEventListener('webglcontextlost', handleContextLost);
+      renderer.domElement.addEventListener('webglcontextrestored', handleContextRestored);
+
+      const handleMotionChange = (ev: MediaQueryListEvent) => {
+        prefersReducedMotion = ev.matches;
+      };
+      motionQuery?.addEventListener('change', handleMotionChange);
 
       const clock = new THREE.Clock();
 
@@ -153,7 +201,7 @@ export function ModePreviewCanvas({ mode, delayMs = 0 }: ModePreviewCanvasProps)
         const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
         gl.flush();
         const poll = () => {
-          if (disposed) {
+          if (disposed || contextLost || isPausedHidden) {
             if (sync) gl.deleteSync(sync);
             return;
           }
@@ -169,25 +217,28 @@ export function ModePreviewCanvas({ mode, delayMs = 0 }: ModePreviewCanvasProps)
       };
 
       const tick = () => {
-        if (disposed) return;
+        if (disposed || contextLost || isPausedHidden) return;
         clock.getDelta();
         const t = clock.elapsedTime;
 
-        for (let idx = 0; idx < rigs.length; idx++) {
-          const rig = rigs[idx];
-          const p = t * 2.0 + rig.phaseOffset;
-          rig.torso.position.y = rig.torsoBaseY + Math.sin(p) * 0.01;
-          rig.head.rotation.y = Math.sin(p * 0.55) * 0.1;
-          if (rig.cape) {
-            rig.cape.rotation.x = 0.16 + Math.sin(p * 1.2) * 0.04;
-          }
-          if (mode === 'ai' && idx === 0) {
-            rig.body.rotation.y = Math.sin(t * 0.45) * 0.35;
+        if (!prefersReducedMotion) {
+          for (let idx = 0; idx < rigs.length; idx++) {
+            const rig = rigs[idx];
+            const p = t * 2.0 + rig.phaseOffset;
+            rig.torso.position.y = rig.torsoBaseY + Math.sin(p) * 0.01;
+            rig.head.rotation.y = Math.sin(p * 0.55) * 0.1;
+            if (rig.cape) {
+              rig.cape.rotation.x = 0.16 + Math.sin(p * 1.2) * 0.04;
+            }
+            if (mode === 'ai' && idx === 0) {
+              rig.body.rotation.y = Math.sin(t * 0.45) * 0.35;
+            }
           }
         }
 
         renderer.render(scene, camera);
 
+        if (disposed || contextLost || isPausedHidden) return;
         if (isSoftwareGl) {
           afterDraw(tick);
         } else {
@@ -195,18 +246,40 @@ export function ModePreviewCanvas({ mode, delayMs = 0 }: ModePreviewCanvasProps)
         }
       };
 
-      tick();
+      const handleVisibilityChange = () => {
+        isPausedHidden = document.hidden;
+        if (isPausedHidden) {
+          stopLoop();
+        } else if (!disposed && !contextLost) {
+          clock.getDelta();
+          stopLoop();
+          tick();
+        }
+      };
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+
+      if (!isPausedHidden) {
+        tick();
+      } else {
+        renderer.render(scene, camera);
+      }
 
       teardownScene = () => {
-        cancelAnimationFrame(frameId);
-        clearTimeout(frameId);
+        stopLoop();
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+        resizeObserver?.disconnect();
         window.removeEventListener('resize', handleResize);
+        motionQuery?.removeEventListener('change', handleMotionChange);
+        renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
+        renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored);
         for (let i = 0; i < rigs.length; i++) {
           const geos = rigs[i].disposableGeos;
           for (let j = 0; j < geos.length; j++) geos[j].dispose();
         }
         extraGeos.forEach((g) => g.dispose());
         extraMats.forEach((m) => m.dispose());
+        envRT.dispose();
+        scene.environment = null;
         charGeos.dispose();
         materials.dispose();
         renderer.dispose();

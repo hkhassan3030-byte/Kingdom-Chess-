@@ -174,47 +174,52 @@ interface PooledBloodDecal {
   targetScale: number;
 }
 
-function createBloodDecalTexture(): THREE.CanvasTexture {
-  const size = 64;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (ctx) {
-    ctx.clearRect(0, 0, size, size);
-    const cx = size * 0.5;
-    const cy = size * 0.5;
-    const grad = ctx.createRadialGradient(cx, cy, 2, cx, cy, 26);
-    grad.addColorStop(0, 'rgba(84, 7, 11, 0.92)');
-    grad.addColorStop(0.45, 'rgba(105, 10, 16, 0.72)');
-    grad.addColorStop(0.8, 'rgba(72, 6, 10, 0.25)');
-    grad.addColorStop(1, 'rgba(50, 4, 6, 0)');
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 26, 0, Math.PI * 2);
-    ctx.fill();
+let _cachedBloodDecalCanvas: HTMLCanvasElement | null = null;
 
-    // Subtle organic irregular droplets around the main stain
-    const lobes: Array<[number, number, number]> = [
-      [cx - 10, cy - 8, 7.5],
-      [cx + 11, cy - 5, 6.2],
-      [cx + 7, cy + 10, 7.8],
-      [cx - 9, cy + 9, 5.8],
-      [cx + 16, cy + 2, 3.6],
-      [cx - 15, cy - 2, 3.4],
-    ];
-    for (let i = 0; i < lobes.length; i++) {
-      const [lx, ly, lr] = lobes[i];
-      const lg = ctx.createRadialGradient(lx, ly, 0.5, lx, ly, lr);
-      lg.addColorStop(0, 'rgba(92, 8, 13, 0.78)');
-      lg.addColorStop(1, 'rgba(65, 5, 8, 0)');
-      ctx.fillStyle = lg;
+function createBloodDecalTexture(): THREE.CanvasTexture {
+  if (!_cachedBloodDecalCanvas) {
+    const size = 64;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, size, size);
+      const cx = size * 0.5;
+      const cy = size * 0.5;
+      const grad = ctx.createRadialGradient(cx, cy, 2, cx, cy, 26);
+      grad.addColorStop(0, 'rgba(84, 7, 11, 0.92)');
+      grad.addColorStop(0.45, 'rgba(105, 10, 16, 0.72)');
+      grad.addColorStop(0.8, 'rgba(72, 6, 10, 0.25)');
+      grad.addColorStop(1, 'rgba(50, 4, 6, 0)');
+      ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(lx, ly, lr, 0, Math.PI * 2);
+      ctx.arc(cx, cy, 26, 0, Math.PI * 2);
       ctx.fill();
+
+      // Subtle organic irregular droplets around the main stain
+      const lobes: Array<[number, number, number]> = [
+        [cx - 10, cy - 8, 7.5],
+        [cx + 11, cy - 5, 6.2],
+        [cx + 7, cy + 10, 7.8],
+        [cx - 9, cy + 9, 5.8],
+        [cx + 16, cy + 2, 3.6],
+        [cx - 15, cy - 2, 3.4],
+      ];
+      for (let i = 0; i < lobes.length; i++) {
+        const [lx, ly, lr] = lobes[i];
+        const lg = ctx.createRadialGradient(lx, ly, 0.5, lx, ly, lr);
+        lg.addColorStop(0, 'rgba(92, 8, 13, 0.78)');
+        lg.addColorStop(1, 'rgba(65, 5, 8, 0)');
+        ctx.fillStyle = lg;
+        ctx.beginPath();
+        ctx.arc(lx, ly, lr, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
+    _cachedBloodDecalCanvas = canvas;
   }
-  const tex = new THREE.CanvasTexture(canvas);
+  const tex = new THREE.CanvasTexture(_cachedBloodDecalCanvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
@@ -873,15 +878,16 @@ function applyDefenderFall(
   defender.rightArm.rotation.z = -fallEase * 0.72;
   defender.leftArm.rotation.z = fallEase * 0.72;
 
-  if (pFall > 0.04 && shouldFire(ctx, 'death_vocal')) {
-    emitSound(ctx, playSound, 'deathVocal', ctx.defenderClass ?? ctx.payload.captured ?? 'p');
+  const defeatedClass = ctx.defenderClass ?? ctx.payload.captured ?? 'p';
+  if (pFall > 0.04 && defeatedClass !== 'p' && shouldFire(ctx, 'death_vocal')) {
+    emitSound(ctx, playSound, 'deathVocal', defeatedClass);
   }
   if (pFall > 0.08 && shouldFire(ctx, 'death_blood')) {
     _tmpD.set(defender.root.position.x, 0, defender.root.position.z);
     effects.spawnBloodSplash(_tmpD);
   }
-  if (pFall > 0.42 && shouldFire(ctx, 'defeat_sound')) {
-    emitSound(ctx, playSound, 'defenderReaction', ctx.defenderClass ?? ctx.payload.captured ?? 'p');
+  if (pFall > (defeatedClass === 'p' ? 0.16 : 0.42) && shouldFire(ctx, 'defeat_sound')) {
+    emitSound(ctx, playSound, 'defenderReaction', defeatedClass);
   }
 
   if (pFade > 0) {
@@ -1522,8 +1528,12 @@ export function updateCombatDuel(
     }
   } else {
     // 0.88 -> 1.00: Claim defeated square & face enemy kingdom cleanly
-    if (shouldFire(ctx, 'death_vocal')) {
-      emitSound(ctx, playSound, 'deathVocal', ctx.defenderClass ?? ctx.payload.captured ?? 'p');
+    const defeatedClass = ctx.defenderClass ?? ctx.payload.captured ?? 'p';
+    if (defeatedClass !== 'p' && shouldFire(ctx, 'death_vocal')) {
+      emitSound(ctx, playSound, 'deathVocal', defeatedClass);
+    }
+    if (shouldFire(ctx, 'defeat_sound')) {
+      emitSound(ctx, playSound, 'defenderReaction', defeatedClass);
     }
     if (shouldFire(ctx, 'death_blood')) {
       effects.spawnBloodSplash(ctx.capturedPos);

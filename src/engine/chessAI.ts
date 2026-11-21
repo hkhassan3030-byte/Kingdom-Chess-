@@ -160,6 +160,8 @@ function getPstValue(
 
 const _wAttacks = new Uint8Array(64);
 const _bAttacks = new Uint8Array(64);
+const _wMinAttacker = new Uint16Array(64);
+const _bMinAttacker = new Uint16Array(64);
 const _wPawnFiles = new Int8Array(8);
 const _bPawnFiles = new Int8Array(8);
 
@@ -208,16 +210,20 @@ function evalKingSafety(
   return Math.round(kScore * (1 - endgameWeight));
 }
 
-export function evaluateBoard(
+function evaluatePosition(
   chess: Chess,
   aiColor: PieceColor,
-  detailed: boolean
+  detailed: boolean,
+  skipTerminalChecks: boolean,
+  knownInCheck?: boolean
 ): number {
-  if (chess.isCheckmate()) {
-    return chess.turn() === aiColor ? -MATE_SCORE : MATE_SCORE;
-  }
-  if (chess.isDraw() || chess.isStalemate()) {
-    return 0;
+  if (!skipTerminalChecks) {
+    if (chess.isCheckmate()) {
+      return chess.turn() === aiColor ? -MATE_SCORE : MATE_SCORE;
+    }
+    if (chess.isDraw() || chess.isStalemate()) {
+      return 0;
+    }
   }
 
   const board = chess.board();
@@ -269,13 +275,17 @@ export function evaluateBoard(
   if (wBishops >= 2) score += aiColor === 'w' ? 40 : -40;
   if (bBishops >= 2) score += aiColor === 'b' ? 40 : -40;
 
-  // Attack map tracking when detailed evaluation is active (Expert / Grandmaster / Hard)
+  // Attack map + minimum-attacker tracking when detailed evaluation is active
   if (detailed) {
     _wAttacks.fill(0);
     _bAttacks.fill(0);
+    _wMinAttacker.fill(0xffff);
+    _bMinAttacker.fill(0xffff);
   }
   const wAttacks = detailed ? _wAttacks : null;
   const bAttacks = detailed ? _bAttacks : null;
+  const wMinAttacker = detailed ? _wMinAttacker : null;
+  const bMinAttacker = detailed ? _bMinAttacker : null;
 
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
@@ -365,18 +375,38 @@ export function evaluateBoard(
         }
       }
 
-      // Development discipline in opening/middlegame
+      // Development discipline & early queen restraint in opening/middlegame
       if (endgameWeight < 0.55) {
-        if ((cell.type === 'n' || cell.type === 'b') && ((cell.color === 'w' && r === 7) || (cell.color === 'b' && r === 0))) {
-          bonus -= 16;
+        if (
+          (cell.type === 'n' || cell.type === 'b') &&
+          ((cell.color === 'w' && r === 7) || (cell.color === 'b' && r === 0))
+        ) {
+          bonus -= 18;
+        }
+        if (cell.type === 'q' && endgameWeight < 0.25) {
+          const homeRow = cell.color === 'w' ? 7 : 0;
+          if (r !== homeRow) {
+            let undevelopedMinors = 0;
+            for (const mc of [1, 2, 5, 6]) {
+              const mp = board[homeRow][mc];
+              if (mp && mp.color === cell.color && (mp.type === 'n' || mp.type === 'b')) {
+                undevelopedMinors++;
+              }
+            }
+            if (undevelopedMinors >= 2) {
+              bonus -= undevelopedMinors * 10;
+            }
+          }
         }
       }
 
       score += sign * (base + bonus);
 
       // Detailed attack map, forks, pins & king-zone threat analysis
-      if (detailed && wAttacks && bAttacks) {
+      if (detailed && wAttacks && bAttacks && wMinAttacker && bMinAttacker) {
         const atkMap = cell.color === 'w' ? wAttacks : bAttacks;
+        const minAtkMap = cell.color === 'w' ? wMinAttacker : bMinAttacker;
+        const attackerVal = cell.type === 'k' ? 20000 : PIECE_SCORE[cell.type];
         const enemyKR = cell.color === 'w' ? bKingR : wKingR;
         const enemyKC = cell.color === 'w' ? bKingC : wKingC;
         let mobility = 0;
@@ -384,7 +414,11 @@ export function evaluateBoard(
         let kingZoneHits = 0;
 
         const recordSquare = (tr: number, tc: number) => {
-          atkMap[tr * 8 + tc]++;
+          const idx = tr * 8 + tc;
+          atkMap[idx]++;
+          if (attackerVal < minAtkMap[idx]) {
+            minAtkMap[idx] = attackerVal;
+          }
           mobility++;
           const target = board[tr][tc];
           if (target && target.color !== cell.color) {
@@ -423,7 +457,11 @@ export function evaluateBoard(
             const tr = r + ALL_DIRS[k][0];
             const tc = c + ALL_DIRS[k][1];
             if (tr >= 0 && tr < 8 && tc >= 0 && tc < 8) {
-              atkMap[tr * 8 + tc]++;
+              const idx = tr * 8 + tc;
+              atkMap[idx]++;
+              if (attackerVal < minAtkMap[idx]) {
+                minAtkMap[idx] = attackerVal;
+              }
             }
           }
         } else {
@@ -487,8 +525,8 @@ export function evaluateBoard(
     score += aiColor === 'w' ? wSafe - bSafe : bSafe - wSafe;
   }
 
-  // Undefended / Hanging piece awareness
-  if (detailed && wAttacks && bAttacks) {
+  // Undefended / Hanging piece & lesser-attacker threat awareness
+  if (detailed && wAttacks && bAttacks && wMinAttacker && bMinAttacker) {
     for (let r = 0; r < 8; r++) {
       for (let c = 0; c < 8; c++) {
         const cell = board[r][c];
@@ -496,21 +534,46 @@ export function evaluateBoard(
         const idx = r * 8 + c;
         const enemyAtk = cell.color === 'w' ? bAttacks[idx] : wAttacks[idx];
         const allyDef = cell.color === 'w' ? wAttacks[idx] : bAttacks[idx];
+        const minEnemyAttacker = cell.color === 'w' ? bMinAttacker[idx] : wMinAttacker[idx];
+        const pieceVal = PIECE_SCORE[cell.type];
+        const sign = cell.color === aiColor ? 1 : -1;
+
         if (enemyAtk > 0 && allyDef === 0) {
-          const sign = cell.color === aiColor ? 1 : -1;
-          // Hanging non-pawn piece: strong penalty (slightly softened when it's our turn to rescue it)
-          const factor = cell.color === chess.turn() ? 0.18 : 0.42;
-          score -= sign * Math.round(PIECE_SCORE[cell.type] * factor);
+          // Completely undefended non-pawn piece: strong penalty (softened if own turn to rescue)
+          const factor = cell.color === chess.turn() ? 0.22 : 0.48;
+          score -= sign * Math.round(pieceVal * factor);
+        } else if (enemyAtk > 0 && minEnemyAttacker < pieceVal) {
+          // Attacked by a cheaper piece (e.g. pawn vs knight/bishop/rook/queen) even if defended
+          const netLoss = pieceVal - minEnemyAttacker;
+          const factor = cell.color === chess.turn() ? 0.2 : 0.45;
+          score -= sign * Math.round(netLoss * factor);
         }
       }
     }
   }
 
-  if (chess.inCheck()) {
+  const inCheck = knownInCheck ?? chess.inCheck();
+  if (inCheck) {
     score += chess.turn() === aiColor ? -40 : 40;
   }
 
   return score;
+}
+
+export function evaluateBoard(
+  chess: Chess,
+  aiColor: PieceColor,
+  detailed: boolean
+): number {
+  return evaluatePosition(chess, aiColor, detailed, false, undefined);
+}
+
+const _orderScoresScratch = new Int32Array(256);
+
+function getHistoryIndex(from: string, to: string): number {
+  const f = ((from.charCodeAt(0) - 97) << 3) | (from.charCodeAt(1) - 49);
+  const t = ((to.charCodeAt(0) - 97) << 3) | (to.charCodeAt(1) - 49);
+  return (f << 6) | t;
 }
 
 function scoreMoveOrder(
@@ -518,7 +581,7 @@ function scoreMoveOrder(
   ttBestSan: string | undefined,
   killer0: string | undefined,
   killer1: string | undefined,
-  history: Map<string, number>
+  history: Int32Array
 ): number {
   if (ttBestSan && move.san === ttBestSan) return 1000000;
   let s = 0;
@@ -538,7 +601,7 @@ function scoreMoveOrder(
   if (move.to === 'd4' || move.to === 'd5' || move.to === 'e4' || move.to === 'e5') {
     s += 1800;
   }
-  s += history.get(`${move.from}${move.to}`) ?? 0;
+  s += history[getHistoryIndex(move.from, move.to)];
   return s;
 }
 
@@ -547,15 +610,61 @@ function getOrderedMoves(
   ttBestSan: string | undefined,
   killer0: string | undefined,
   killer1: string | undefined,
-  history: Map<string, number>
+  history: Int32Array
 ): Move[] {
   const moves = chess.moves({ verbose: true });
-  moves.sort(
-    (a, b) =>
-      scoreMoveOrder(b, ttBestSan, killer0, killer1, history) -
-      scoreMoveOrder(a, ttBestSan, killer0, killer1, history)
-  );
+  const len = moves.length;
+  if (len <= 1) return moves;
+
+  const scores = len <= _orderScoresScratch.length ? _orderScoresScratch : new Int32Array(len);
+  for (let i = 0; i < len; i++) {
+    scores[i] = scoreMoveOrder(moves[i], ttBestSan, killer0, killer1, history);
+  }
+  for (let i = 1; i < len; i++) {
+    const move = moves[i];
+    const score = scores[i];
+    let j = i - 1;
+    while (j >= 0 && scores[j] < score) {
+      moves[j + 1] = moves[j];
+      scores[j + 1] = scores[j];
+      j--;
+    }
+    moves[j + 1] = move;
+    scores[j + 1] = score;
+  }
   return moves;
+}
+
+function getQuiescenceMoves(chess: Chess, inCheck: boolean): Move[] {
+  const allMoves = chess.moves({ verbose: true });
+  const filtered: Move[] = [];
+  for (let i = 0; i < allMoves.length; i++) {
+    const m = allMoves[i];
+    if (inCheck || m.captured || m.promotion === 'q' || m.promotion === 'n') {
+      filtered.push(m);
+    }
+  }
+  const len = filtered.length;
+  if (len <= 1) return filtered;
+
+  const scores = len <= _orderScoresScratch.length ? _orderScoresScratch : new Int32Array(len);
+  for (let i = 0; i < len; i++) {
+    const m = filtered[i];
+    scores[i] = m.captured ? 10 * PIECE_SCORE[m.captured] - PIECE_SCORE[m.piece] : 0;
+  }
+  for (let i = 1; i < len; i++) {
+    const move = filtered[i];
+    const score = scores[i];
+    let j = i - 1;
+    while (j >= 0 && scores[j] < score) {
+      filtered[j + 1] = filtered[j];
+      scores[j + 1] = scores[j];
+      j--;
+    }
+    filtered[j + 1] = move;
+    scores[j + 1] = score;
+  }
+  return filtered;
 }
 
 interface SearchContext {
@@ -564,10 +673,23 @@ interface SearchContext {
   nodes: number;
   maxNodes: number;
   deadline: number;
+  allowAbort: boolean;
   aborted: boolean;
   tt: Map<string, TTEntry>;
   killers: Array<[string | undefined, string | undefined]>;
-  history: Map<string, number>;
+  history: Int32Array;
+}
+
+function toTTScore(score: number, ply: number): number {
+  if (score > MATE_SCORE - 500) return score + ply;
+  if (score < -MATE_SCORE + 500) return score - ply;
+  return score;
+}
+
+function fromTTScore(score: number, ply: number): number {
+  if (score > MATE_SCORE - 500) return score - ply;
+  if (score < -MATE_SCORE + 500) return score + ply;
+  return score;
 }
 
 function quiescence(
@@ -576,54 +698,65 @@ function quiescence(
   beta: number,
   maximizing: boolean,
   qDepth: number,
+  ply: number,
   ctx: SearchContext
 ): number {
   ctx.nodes++;
-  if ((ctx.nodes & 255) === 0 && performance.now() > ctx.deadline) {
+  if (ctx.allowAbort && (ctx.nodes & 63) === 0 && performance.now() > ctx.deadline) {
     ctx.aborted = true;
-    return evaluateBoard(chess, ctx.aiColor, ctx.detailedEval);
-  }
-
-  if (chess.isCheckmate()) {
-    return chess.turn() === ctx.aiColor ? -MATE_SCORE + 50 : MATE_SCORE - 50;
-  }
-  if (chess.isDraw() || chess.isStalemate()) {
-    return 0;
-  }
-
-  const standPat = evaluateBoard(chess, ctx.aiColor, ctx.detailedEval);
-  if (qDepth <= 0 || ctx.nodes >= ctx.maxNodes) {
-    return standPat;
+    return evaluatePosition(chess, ctx.aiColor, ctx.detailedEval, false, undefined);
   }
 
   const inCheck = chess.inCheck();
+  if (inCheck) {
+    if (chess.isCheckmate()) {
+      return chess.turn() === ctx.aiColor ? -MATE_SCORE + ply : MATE_SCORE - ply;
+    }
+    if (
+      chess.isThreefoldRepetition() ||
+      chess.isDrawByFiftyMoves() ||
+      chess.isInsufficientMaterial()
+    ) {
+      return 0;
+    }
+  } else {
+    if (
+      chess.isThreefoldRepetition() ||
+      chess.isDrawByFiftyMoves() ||
+      chess.isInsufficientMaterial() ||
+      chess.isStalemate()
+    ) {
+      return 0;
+    }
+  }
+
+  const standPat = evaluatePosition(chess, ctx.aiColor, ctx.detailedEval, true, inCheck);
+  if (qDepth <= 0 || ctx.nodes >= ctx.maxNodes) {
+    return standPat;
+  }
 
   if (maximizing) {
     if (!inCheck) {
       if (standPat >= beta) return beta;
       if (standPat > alpha) alpha = standPat;
     }
-    const moves = chess
-      .moves({ verbose: true })
-      .filter((m) => inCheck || m.captured || m.promotion)
-      .sort(
-        (a, b) =>
-          (b.captured ? 10 * PIECE_SCORE[b.captured] - PIECE_SCORE[b.piece] : 0) -
-          (a.captured ? 10 * PIECE_SCORE[a.captured] - PIECE_SCORE[a.piece] : 0)
-      );
+    const moves = getQuiescenceMoves(chess, inCheck);
 
-    for (const move of moves) {
-      // Delta pruning for clearly hopeless non-check captures
+    for (let i = 0; i < moves.length; i++) {
+      const move = moves[i];
+      // Delta pruning for clearly hopeless non-checking captures
       if (
         !inCheck &&
         !move.promotion &&
+        !move.san.includes('+') &&
+        !move.san.includes('#') &&
         move.captured &&
         standPat + PIECE_SCORE[move.captured] + 180 < alpha
       ) {
         continue;
       }
       chess.move(move);
-      const val = quiescence(chess, alpha, beta, false, qDepth - 1, ctx);
+      const val = quiescence(chess, alpha, beta, false, qDepth - 1, ply + 1, ctx);
       chess.undo();
       if (ctx.aborted) return alpha;
       if (val >= beta) return beta;
@@ -635,26 +768,22 @@ function quiescence(
       if (standPat <= alpha) return alpha;
       if (standPat < beta) beta = standPat;
     }
-    const moves = chess
-      .moves({ verbose: true })
-      .filter((m) => inCheck || m.captured || m.promotion)
-      .sort(
-        (a, b) =>
-          (b.captured ? 10 * PIECE_SCORE[b.captured] - PIECE_SCORE[b.piece] : 0) -
-          (a.captured ? 10 * PIECE_SCORE[a.captured] - PIECE_SCORE[a.piece] : 0)
-      );
+    const moves = getQuiescenceMoves(chess, inCheck);
 
-    for (const move of moves) {
+    for (let i = 0; i < moves.length; i++) {
+      const move = moves[i];
       if (
         !inCheck &&
         !move.promotion &&
+        !move.san.includes('+') &&
+        !move.san.includes('#') &&
         move.captured &&
         standPat - PIECE_SCORE[move.captured] - 180 > beta
       ) {
         continue;
       }
       chess.move(move);
-      const val = quiescence(chess, alpha, beta, true, qDepth - 1, ctx);
+      const val = quiescence(chess, alpha, beta, true, qDepth - 1, ply + 1, ctx);
       chess.undo();
       if (ctx.aborted) return beta;
       if (val <= alpha) return alpha;
@@ -676,15 +805,21 @@ function alphabeta(
   ctx: SearchContext
 ): number {
   ctx.nodes++;
-  if ((ctx.nodes & 255) === 0 && performance.now() > ctx.deadline) {
+  if (ctx.allowAbort && (ctx.nodes & 63) === 0 && performance.now() > ctx.deadline) {
     ctx.aborted = true;
-    return evaluateBoard(chess, ctx.aiColor, ctx.detailedEval);
+    return evaluatePosition(chess, ctx.aiColor, ctx.detailedEval, false, undefined);
   }
 
-  if (chess.isCheckmate()) {
-    return chess.turn() === ctx.aiColor ? -MATE_SCORE + ply : MATE_SCORE - ply;
-  }
-  if (chess.isDraw() || chess.isStalemate()) {
+  const inCheck = chess.inCheck();
+  const isSimpleDraw =
+    chess.isThreefoldRepetition() ||
+    chess.isDrawByFiftyMoves() ||
+    chess.isInsufficientMaterial();
+
+  if (isSimpleDraw) {
+    if (inCheck && chess.isCheckmate()) {
+      return chess.turn() === ctx.aiColor ? -MATE_SCORE + ply : MATE_SCORE - ply;
+    }
     return 0;
   }
 
@@ -698,25 +833,36 @@ function alphabeta(
     if (entry) {
       ttBestSan = entry.bestSan;
       if (entry.depth >= depth) {
-        if (entry.flag === 0) return entry.score;
-        if (entry.flag === 1 && entry.score > alpha) alpha = entry.score;
-        else if (entry.flag === 2 && entry.score < beta) beta = entry.score;
-        if (alpha >= beta) return entry.score;
+        const entryScore = fromTTScore(entry.score, ply);
+        if (entry.flag === 0) return entryScore;
+        if (entry.flag === 1 && entryScore > alpha) alpha = entryScore;
+        else if (entry.flag === 2 && entryScore < beta) beta = entryScore;
+        if (alpha >= beta) return entryScore;
       }
     }
   }
 
-  if (depth <= 0 || ctx.nodes >= ctx.maxNodes) {
+  if (depth <= 0 || (ctx.allowAbort && ctx.nodes >= ctx.maxNodes)) {
     if (qMaxDepth > 0) {
-      return quiescence(chess, alpha, beta, maximizing, qMaxDepth, ctx);
+      return quiescence(chess, alpha, beta, maximizing, qMaxDepth, ply, ctx);
     }
-    return evaluateBoard(chess, ctx.aiColor, ctx.detailedEval);
+    if (inCheck && chess.isCheckmate()) {
+      return chess.turn() === ctx.aiColor ? -MATE_SCORE + ply : MATE_SCORE - ply;
+    }
+    if (!inCheck && chess.isStalemate()) {
+      return 0;
+    }
+    return evaluatePosition(chess, ctx.aiColor, ctx.detailedEval, true, inCheck);
   }
 
   const killerPair = ctx.killers[ply] ?? [undefined, undefined];
   const moves = getOrderedMoves(chess, ttBestSan, killerPair[0], killerPair[1], ctx.history);
   if (moves.length === 0) {
-    return evaluateBoard(chess, ctx.aiColor, ctx.detailedEval);
+    return inCheck
+      ? chess.turn() === ctx.aiColor
+        ? -MATE_SCORE + ply
+        : MATE_SCORE - ply
+      : 0;
   }
 
   let bestMoveSan = moves[0].san;
@@ -812,8 +958,7 @@ function alphabeta(
             ctx.killers[ply][1] = ctx.killers[ply][0];
             ctx.killers[ply][0] = move.san;
           }
-          const hKey = `${move.from}${move.to}`;
-          ctx.history.set(hKey, (ctx.history.get(hKey) ?? 0) + depth * depth * 12);
+          ctx.history[getHistoryIndex(move.from, move.to)] += depth * depth * 12;
         }
         break;
       }
@@ -829,17 +974,21 @@ function alphabeta(
             ctx.killers[ply][1] = ctx.killers[ply][0];
             ctx.killers[ply][0] = move.san;
           }
-          const hKey = `${move.from}${move.to}`;
-          ctx.history.set(hKey, (ctx.history.get(hKey) ?? 0) + depth * depth * 12);
+          ctx.history[getHistoryIndex(move.from, move.to)] += depth * depth * 12;
         }
         break;
       }
     }
   }
 
-  if (useTT && ctx.tt.size < TT_MAX_SIZE) {
+  if (useTT && ctx.tt.size < TT_MAX_SIZE && !ctx.aborted) {
     const flag: 0 | 1 | 2 = bestVal <= origAlpha ? 2 : bestVal >= origBeta ? 1 : 0;
-    ctx.tt.set(key, { depth, score: bestVal, flag, bestSan: bestMoveSan });
+    ctx.tt.set(key, {
+      depth,
+      score: toTTScore(bestVal, ply),
+      flag,
+      bestSan: bestMoveSan,
+    });
   }
 
   return bestVal;
@@ -885,7 +1034,8 @@ export function selectAIMoveWithInsight(
 ): AIMoveResult | null {
   const chess = new Chess(fen);
   const aiColor = chess.turn() as PieceColor;
-  const legalMoves = getOrderedMoves(chess, undefined, undefined, undefined, new Map());
+  const history = new Int32Array(4096);
+  const legalMoves = getOrderedMoves(chess, undefined, undefined, undefined, history);
   if (legalMoves.length === 0) return null;
 
   // Immediate checkmate in 1 check
@@ -901,15 +1051,49 @@ export function selectAIMoveWithInsight(
     }
   }
 
+  // Count non-pawn material to grant extra search depth safely in simplified endgames
+  const board = chess.board();
+  let nonPawnMaterial = 0;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const cell = board[r][c];
+      if (cell && cell.type !== 'p' && cell.type !== 'k') {
+        nonPawnMaterial += PIECE_SCORE[cell.type];
+      }
+    }
+  }
+  const endgameDepthBonus = nonPawnMaterial <= 1800 ? 1 : 0;
+
   const config: Record<
     AIDifficulty,
     { maxDepth: number; qDepth: number; maxNodes: number; budgetMs: number; detailed: boolean; useTT: boolean }
   > = {
-    easy: { maxDepth: 1, qDepth: 0, maxNodes: 600, budgetMs: 120, detailed: false, useTT: false },
-    normal: { maxDepth: 2, qDepth: 2, maxNodes: 3500, budgetMs: 260, detailed: false, useTT: false },
-    hard: { maxDepth: 3, qDepth: 3, maxNodes: 14000, budgetMs: 450, detailed: true, useTT: true },
-    expert: { maxDepth: 4, qDepth: 3, maxNodes: 32000, budgetMs: 750, detailed: true, useTT: true },
-    grandmaster: { maxDepth: 5, qDepth: 4, maxNodes: 65000, budgetMs: 1200, detailed: true, useTT: true },
+    easy: { maxDepth: 1, qDepth: 1, maxNodes: 650, budgetMs: 70, detailed: false, useTT: false },
+    normal: { maxDepth: 2, qDepth: 2, maxNodes: 5500, budgetMs: 220, detailed: true, useTT: true },
+    hard: {
+      maxDepth: 3 + endgameDepthBonus,
+      qDepth: 4,
+      maxNodes: 20000,
+      budgetMs: 500,
+      detailed: true,
+      useTT: true,
+    },
+    expert: {
+      maxDepth: 4 + endgameDepthBonus,
+      qDepth: 4,
+      maxNodes: 45000,
+      budgetMs: 850,
+      detailed: true,
+      useTT: true,
+    },
+    grandmaster: {
+      maxDepth: 5 + endgameDepthBonus,
+      qDepth: 5,
+      maxNodes: 95000,
+      budgetMs: 1350,
+      detailed: true,
+      useTT: true,
+    },
   };
 
   const cfg = config[difficulty];
@@ -919,37 +1103,44 @@ export function selectAIMoveWithInsight(
     nodes: 0,
     maxNodes: cfg.maxNodes,
     deadline: performance.now() + cfg.budgetMs,
+    allowAbort: false,
     aborted: false,
     tt: new Map<string, TTEntry>(),
     killers: Array.from({ length: 16 }, () => [undefined, undefined]),
-    history: new Map<string, number>(),
+    history,
   };
 
-  // Easy mode: shallow lookahead with occasional human-like inaccuracy (never purely random)
+  // Easy mode: fast 1-ply + 1-ply recapture check with beginner-friendly imprecision.
+  // Never skips mate-in-1 and filters out mate-in-1 blunders when safe moves exist.
   if (difficulty === 'easy') {
     const scored: Array<{ move: Move; score: number }> = [];
     for (const move of legalMoves) {
       chess.move(move);
-      const s =
-        alphabeta(chess, 0, 1, -Infinity, Infinity, false, 0, false, ctx) +
-        (Math.random() * 70 - 35);
+      const evalScore = quiescence(chess, -Infinity, Infinity, false, cfg.qDepth, 1, ctx);
       chess.undo();
-      scored.push({ move, score: s });
+      const jitter = Math.random() * 90 - 45;
+      scored.push({ move, score: evalScore + jitter });
     }
     scored.sort((a, b) => b.score - a.score);
-    // Usually picks from top 3–5 decent moves, occasionally makes a beginner mistake
-    const mistake = Math.random() < 0.28 && scored.length > 4;
-    const poolSize = mistake ? Math.min(7, scored.length) : Math.min(3, scored.length);
-    const pickIdx = mistake
-      ? Math.min(scored.length - 1, 2 + Math.floor(Math.random() * (poolSize - 2)))
-      : Math.floor(Math.random() * poolSize);
-    const chosen = scored[pickIdx]?.move ?? legalMoves[0];
+
+    const safePool = scored.filter((item) => item.score > -MATE_SCORE + 200);
+    const activePool = safePool.length > 0 ? safePool : scored;
+
+    const makeInaccuracy = Math.random() < 0.25 && activePool.length > 3;
+    const pickIdx = makeInaccuracy
+      ? Math.min(
+          activePool.length - 1,
+          1 + Math.floor(Math.random() * Math.min(4, activePool.length - 1))
+        )
+      : Math.floor(Math.random() * Math.min(3, activePool.length));
+
+    const chosen = activePool[pickIdx]?.move ?? legalMoves[0];
     return {
       from: chosen.from,
       to: chosen.to,
       promotion: chosen.promotion,
       san: chosen.san,
-      insight: buildStatusInsight(chosen, scored[pickIdx]?.score ?? 0, difficulty),
+      insight: buildStatusInsight(chosen, activePool[pickIdx]?.score ?? 0, difficulty),
     };
   }
 
@@ -960,6 +1151,9 @@ export function selectAIMoveWithInsight(
   // Iterative deepening for Normal -> Grandmaster
   for (let depth = 1; depth <= cfg.maxDepth; depth++) {
     ctx.aborted = false;
+    // Always complete depth 1 so slower mobile CPUs never fall back to an unsearched move
+    ctx.allowAbort = depth >= 2;
+
     let iterBestMove = rootMoves[0];
     let iterBestScore = -Infinity;
     const moveScores: Array<{ move: Move; score: number }> = [];
@@ -967,12 +1161,17 @@ export function selectAIMoveWithInsight(
     const beta = Infinity;
 
     for (const move of rootMoves) {
+      // Keep an alpha margin on Normal's final depth so fail-low moves never tie bestScore
+      const searchAlpha =
+        difficulty === 'normal' && depth === cfg.maxDepth && alpha > -Infinity
+          ? alpha - 20
+          : alpha;
       chess.move(move);
       const score = alphabeta(
         chess,
         depth - 1,
         1,
-        alpha,
+        searchAlpha,
         beta,
         false,
         cfg.qDepth,
@@ -1000,7 +1199,7 @@ export function selectAIMoveWithInsight(
 
       // Slight variety only between nearly tied moves on Normal
       if (difficulty === 'normal' && depth === cfg.maxDepth && moveScores.length > 1) {
-        const tied = moveScores.filter((m) => bestScore - m.score <= 15);
+        const tied = moveScores.filter((m) => bestScore - m.score <= 12);
         if (tied.length > 1) {
           bestMove = tied[Math.floor(Math.random() * tied.length)].move;
         }

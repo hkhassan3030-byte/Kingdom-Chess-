@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronUp,
@@ -8,18 +8,22 @@ import {
   Pause,
   RotateCcw,
   Settings,
+  Trophy,
   Undo2,
   Video,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
+import { audioManager } from '../audio/AudioManager';
 import {
   AI_PROFILES,
   PIECE_GLYPHS,
   PIECE_VALUES,
   type CapturedState,
+  type GameMode,
   type GameSettings,
   type GameStatus,
+  type PieceColor,
   type PieceType,
 } from '../types/chess';
 
@@ -27,12 +31,15 @@ interface GameHUDProps {
   status: GameStatus;
   settings: GameSettings;
   captured: CapturedState;
-  whiteTime: number;
-  blackTime: number;
+  clockResetKey: number;
+  isClockRunning: boolean;
+  onTimeout: (winner: PieceColor) => void;
   isAIThinking: boolean;
   aiMessage: string | null;
   combatLabel: string | null;
   canUndo: boolean;
+  isInspectingGameOver: boolean;
+  onShowGameOver: () => void;
   onPause: () => void;
   onRestart: () => void;
   onUndo: () => void;
@@ -52,19 +59,171 @@ function formatTime(seconds: number): string {
 }
 
 function computeMaterialValue(pieces: PieceType[]): number {
-  return pieces.reduce((acc, p) => acc + PIECE_VALUES[p], 0);
+  let total = 0;
+  for (let i = 0; i < pieces.length; i++) {
+    total += PIECE_VALUES[pieces[i]];
+  }
+  return total;
 }
 
-export function GameHUD({
+interface MatchClocksProps {
+  turn: PieceColor;
+  isGameOver: boolean;
+  timeControlSeconds: number;
+  mode: GameMode;
+  playerColor: PieceColor;
+  clockResetKey: number;
+  isClockRunning: boolean;
+  captured: CapturedState;
+  whiteAdv: number;
+  blackAdv: number;
+  onTimeout: (winner: PieceColor) => void;
+}
+
+const MatchClocks = memo(function MatchClocks({
+  turn,
+  isGameOver,
+  timeControlSeconds,
+  mode,
+  playerColor,
+  clockResetKey,
+  isClockRunning,
+  captured,
+  whiteAdv,
+  blackAdv,
+  onTimeout,
+}: MatchClocksProps) {
+  const [whiteTime, setWhiteTime] = useState(timeControlSeconds);
+  const [blackTime, setBlackTime] = useState(timeControlSeconds);
+  const whiteTimeRef = useRef(timeControlSeconds);
+  const blackTimeRef = useRef(timeControlSeconds);
+  const timeoutFiredRef = useRef(false);
+  const onTimeoutRef = useRef(onTimeout);
+  onTimeoutRef.current = onTimeout;
+
+  useEffect(() => {
+    whiteTimeRef.current = timeControlSeconds;
+    blackTimeRef.current = timeControlSeconds;
+    timeoutFiredRef.current = false;
+    setWhiteTime(timeControlSeconds);
+    setBlackTime(timeControlSeconds);
+  }, [clockResetKey, timeControlSeconds]);
+
+  useEffect(() => {
+    if (!isClockRunning || timeControlSeconds === 0) return;
+
+    const interval = window.setInterval(() => {
+      if (timeoutFiredRef.current) return;
+      if (turn === 'w') {
+        const prev = whiteTimeRef.current;
+        if (prev <= 1) {
+          timeoutFiredRef.current = true;
+          whiteTimeRef.current = 0;
+          setWhiteTime(0);
+          onTimeoutRef.current('b');
+          return;
+        }
+        if (prev <= 11 && prev > 1 && (mode === 'pvp' || playerColor === 'w')) {
+          audioManager.playTimerWarning(prev <= 6);
+        }
+        const next = prev - 1;
+        whiteTimeRef.current = next;
+        setWhiteTime(next);
+      } else {
+        const prev = blackTimeRef.current;
+        if (prev <= 1) {
+          timeoutFiredRef.current = true;
+          blackTimeRef.current = 0;
+          setBlackTime(0);
+          onTimeoutRef.current('w');
+          return;
+        }
+        if (prev <= 11 && prev > 1 && (mode === 'pvp' || playerColor === 'b')) {
+          audioManager.playTimerWarning(prev <= 6);
+        }
+        const next = prev - 1;
+        blackTimeRef.current = next;
+        setBlackTime(next);
+      }
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [isClockRunning, timeControlSeconds, turn, mode, playerColor]);
+
+  return (
+    <div className="flex items-center gap-1.5 sm:gap-3">
+      {/* White Kingdom Clock */}
+      <div
+        className={`flex items-center gap-2 rounded-xl border px-2.5 py-1 transition-colors ${
+          turn === 'w' && !isGameOver
+            ? 'border-amber-400/65 bg-amber-400/14 text-amber-100'
+            : 'border-white/10 bg-white/5 text-slate-300'
+        }`}
+      >
+        <div className="flex flex-col items-end">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium">
+            <span className="text-slate-200">White</span>
+            <span className="font-mono-tabular text-xs font-semibold text-amber-100">
+              {timeControlSeconds > 0 ? formatTime(whiteTime) : '∞'}
+            </span>
+          </div>
+          {(captured.b.length > 0 || whiteAdv > 0) && (
+            <div className="hidden max-w-[110px] items-center gap-0.5 truncate text-[11px] text-slate-300 md:flex">
+              <span>{captured.b.slice(-5).map((p) => PIECE_GLYPHS.b[p]).join('')}</span>
+              {whiteAdv > 0 && (
+                <span className="font-mono-tabular ml-0.5 text-[10px] text-amber-300">
+                  +{whiteAdv}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Black Kingdom Clock */}
+      <div
+        className={`flex items-center gap-2 rounded-xl border px-2.5 py-1 transition-colors ${
+          turn === 'b' && !isGameOver
+            ? 'border-rose-400/65 bg-rose-500/16 text-rose-100'
+            : 'border-white/10 bg-white/5 text-slate-300'
+        }`}
+      >
+        <div className="flex flex-col items-start">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium">
+            <span className="text-slate-200">Black</span>
+            <span className="font-mono-tabular text-xs font-semibold text-rose-100">
+              {timeControlSeconds > 0 ? formatTime(blackTime) : '∞'}
+            </span>
+          </div>
+          {(captured.w.length > 0 || blackAdv > 0) && (
+            <div className="hidden max-w-[110px] items-center gap-0.5 truncate text-[11px] text-slate-300 md:flex">
+              <span>{captured.w.slice(-5).map((p) => PIECE_GLYPHS.w[p]).join('')}</span>
+              {blackAdv > 0 && (
+                <span className="font-mono-tabular ml-0.5 text-[10px] text-rose-300">
+                  +{blackAdv}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+export const GameHUD = memo(function GameHUD({
   status,
   settings,
   captured,
-  whiteTime,
-  blackTime,
+  clockResetKey,
+  isClockRunning,
+  onTimeout,
   isAIThinking,
   aiMessage,
   combatLabel,
   canUndo,
+  isInspectingGameOver,
+  onShowGameOver,
   onPause,
   onRestart,
   onUndo,
@@ -77,9 +236,25 @@ export function GameHUD({
 }: GameHUDProps) {
   const [dockOpen, setDockOpen] = useState(true);
   const [confirmResign, setConfirmResign] = useState(false);
+  const [confirmRestart, setConfirmRestart] = useState(false);
 
-  const whiteMatScore = computeMaterialValue(captured.b);
-  const blackMatScore = computeMaterialValue(captured.w);
+  useEffect(() => {
+    if (status.isGameOver) {
+      setConfirmResign(false);
+      setConfirmRestart(false);
+    }
+  }, [status.isGameOver]);
+
+  const handleRestartClick = () => {
+    if (status.moveCount > 0 && !status.isGameOver) {
+      setConfirmRestart(true);
+    } else {
+      onRestart();
+    }
+  };
+
+  const whiteMatScore = useMemo(() => computeMaterialValue(captured.b), [captured.b]);
+  const blackMatScore = useMemo(() => computeMaterialValue(captured.w), [captured.w]);
   const whiteAdv = whiteMatScore - blackMatScore;
   const blackAdv = blackMatScore - whiteMatScore;
 
@@ -112,6 +287,7 @@ export function GameHUD({
           <div className="flex min-w-0 items-center gap-2">
             <button
               type="button"
+              data-sfx="custom"
               onClick={onPause}
               aria-label="Pause Game"
               title="Pause Game"
@@ -152,63 +328,19 @@ export function GameHUD({
           </div>
 
           {/* Center: Kingdom Clocks & Captured Material */}
-          <div className="flex items-center gap-1.5 sm:gap-3">
-            {/* White Kingdom Clock */}
-            <div
-              className={`flex items-center gap-2 rounded-xl border px-2.5 py-1 transition-colors ${
-                status.turn === 'w' && !status.isGameOver
-                  ? 'border-amber-400/65 bg-amber-400/14 text-amber-100'
-                  : 'border-white/10 bg-white/5 text-slate-300'
-              }`}
-            >
-              <div className="flex flex-col items-end">
-                <div className="flex items-center gap-1.5 text-[11px] font-medium">
-                  <span className="text-slate-200">White</span>
-                  <span className="font-mono-tabular text-xs font-semibold text-amber-100">
-                    {settings.timeControlSeconds > 0 ? formatTime(whiteTime) : '∞'}
-                  </span>
-                </div>
-                {(captured.b.length > 0 || whiteAdv > 0) && (
-                  <div className="hidden max-w-[110px] items-center gap-0.5 truncate text-[11px] text-slate-300 md:flex">
-                    <span>{captured.b.slice(-5).map((p) => PIECE_GLYPHS.b[p]).join('')}</span>
-                    {whiteAdv > 0 && (
-                      <span className="font-mono-tabular ml-0.5 text-[10px] text-amber-300">
-                        +{whiteAdv}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Black Kingdom Clock */}
-            <div
-              className={`flex items-center gap-2 rounded-xl border px-2.5 py-1 transition-colors ${
-                status.turn === 'b' && !status.isGameOver
-                  ? 'border-rose-400/65 bg-rose-500/16 text-rose-100'
-                  : 'border-white/10 bg-white/5 text-slate-300'
-              }`}
-            >
-              <div className="flex flex-col items-start">
-                <div className="flex items-center gap-1.5 text-[11px] font-medium">
-                  <span className="text-slate-200">Black</span>
-                  <span className="font-mono-tabular text-xs font-semibold text-rose-100">
-                    {settings.timeControlSeconds > 0 ? formatTime(blackTime) : '∞'}
-                  </span>
-                </div>
-                {(captured.w.length > 0 || blackAdv > 0) && (
-                  <div className="hidden max-w-[110px] items-center gap-0.5 truncate text-[11px] text-slate-300 md:flex">
-                    <span>{captured.w.slice(-5).map((p) => PIECE_GLYPHS.w[p]).join('')}</span>
-                    {blackAdv > 0 && (
-                      <span className="font-mono-tabular ml-0.5 text-[10px] text-rose-300">
-                        +{blackAdv}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
+          <MatchClocks
+            turn={status.turn}
+            isGameOver={status.isGameOver}
+            timeControlSeconds={settings.timeControlSeconds}
+            mode={settings.mode}
+            playerColor={settings.playerColor}
+            clockResetKey={clockResetKey}
+            isClockRunning={isClockRunning}
+            captured={captured}
+            whiteAdv={whiteAdv}
+            blackAdv={blackAdv}
+            onTimeout={onTimeout}
+          />
 
           {/* Right: Settings Button */}
           <button
@@ -247,7 +379,7 @@ export function GameHUD({
 
         {/* Active Capture Combat Banner */}
         {combatLabel && !status.isGameOver && (
-          <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-amber-400/45 bg-[#16121b]/95 px-4 py-1.5 text-xs font-bold tracking-wider text-amber-200 uppercase shadow-lg shadow-black/50">
+          <div className="animate-banner-in mt-1.5 flex items-center gap-2 rounded-xl border border-amber-400/45 bg-[#16121b]/95 px-4 py-1.5 text-xs font-bold tracking-wider text-amber-200 uppercase shadow-lg shadow-black/50">
             <span aria-hidden="true">⚔</span>
             <span>{combatLabel}</span>
           </div>
@@ -255,7 +387,7 @@ export function GameHUD({
 
         {/* Non-Spammy AI Thinking / Personality Status Callout */}
         {!combatLabel && (isAIThinking || aiMessage) && !status.isGameOver && (
-          <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-amber-400/25 bg-[#0f1522]/92 px-3.5 py-1.5 text-xs text-amber-100 shadow-md">
+          <div className="animate-banner-in mt-1.5 flex items-center gap-2 rounded-xl border border-amber-400/25 bg-[#0f1522]/92 px-3.5 py-1.5 text-xs text-amber-100 shadow-md">
             {isAIThinking ? (
               <>
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-300" />
@@ -272,14 +404,28 @@ export function GameHUD({
             )}
           </div>
         )}
+        {/* Return to Match Summary banner when inspecting the final board */}
+        {isInspectingGameOver && (
+          <div className="animate-banner-in pointer-events-auto mt-2 flex items-center gap-2.5 rounded-xl border border-amber-400/45 bg-[#0f1522]/95 px-3 py-1.5 shadow-lg shadow-black/55">
+            <span className="text-xs font-medium text-slate-200">Inspecting Final Board</span>
+            <button
+              type="button"
+              onClick={onShowGameOver}
+              className="fantasy-btn-primary flex min-h-[34px] items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-bold tracking-wider uppercase"
+            >
+              <Trophy className="h-3.5 w-3.5" />
+              <span>Match Result</span>
+            </button>
+          </div>
+        )}
       </header>
 
       {/* Resign Confirmation Dialog */}
       {confirmResign && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">
-          <div className="fantasy-panel w-full max-w-xs rounded-2xl p-5 text-center">
+        <div className="animate-modal-backdrop fixed inset-0 z-40 flex items-center justify-center bg-black/75 p-4">
+          <div className="fantasy-panel animate-modal-panel w-full max-w-xs rounded-2xl p-5 text-center">
             <h2 className="font-display text-base font-bold text-amber-100">RESIGN MATCH?</h2>
-            <p className="mt-1.5 text-xs text-slate-300">
+            <p className="mt-1.5 text-xs leading-relaxed text-slate-300">
               Conceding will declare the opposing Kingdom victorious.
             </p>
             <div className="mt-4 flex gap-2">
@@ -292,13 +438,45 @@ export function GameHUD({
               </button>
               <button
                 type="button"
+                data-sfx="custom"
                 onClick={() => {
                   setConfirmResign(false);
                   onResign();
                 }}
-                className="min-h-[44px] flex-1 rounded-xl border border-rose-400/50 bg-rose-600 text-xs font-bold text-white hover:bg-rose-500"
+                className="min-h-[44px] flex-1 rounded-xl border border-rose-400/50 bg-rose-600 text-xs font-bold text-white transition-colors hover:bg-rose-500 active:scale-[0.98]"
               >
                 Resign
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Restart Confirmation Dialog (only during active games with moves played) */}
+      {confirmRestart && (
+        <div className="animate-modal-backdrop fixed inset-0 z-40 flex items-center justify-center bg-black/75 p-4">
+          <div className="fantasy-panel animate-modal-panel w-full max-w-xs rounded-2xl p-5 text-center">
+            <h2 className="font-display text-base font-bold text-amber-100">RESTART MATCH?</h2>
+            <p className="mt-1.5 text-xs leading-relaxed text-slate-300">
+              Current board progress will be reset and a fresh battle will begin.
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmRestart(false)}
+                className="fantasy-btn-secondary min-h-[44px] flex-1 rounded-xl text-xs font-semibold"
+              >
+                Keep Playing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmRestart(false);
+                  onRestart();
+                }}
+                className="fantasy-btn-primary min-h-[44px] flex-1 rounded-xl text-xs font-bold"
+              >
+                Restart
               </button>
             </div>
           </div>
@@ -333,7 +511,7 @@ export function GameHUD({
           >
             <button
               type="button"
-              onClick={onRestart}
+              onClick={handleRestartClick}
               className="flex min-h-[44px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-400/30 bg-amber-400/12 px-3 py-2 text-xs font-semibold text-amber-100 transition-colors hover:bg-amber-400/22 active:scale-[0.98]"
             >
               <RotateCcw className="h-4 w-4 text-amber-300" />
@@ -342,6 +520,7 @@ export function GameHUD({
 
             <button
               type="button"
+              data-sfx="custom"
               onClick={onUndo}
               disabled={!canUndo}
               className="flex min-h-[44px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-white/12 bg-white/6 px-3 py-2 text-xs font-medium text-slate-100 transition-colors hover:bg-white/12 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
@@ -408,4 +587,4 @@ export function GameHUD({
       </div>
     </>
   );
-}
+});

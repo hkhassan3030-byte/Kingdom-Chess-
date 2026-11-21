@@ -1,4 +1,5 @@
 import { ArrowLeft, Clock, Shield, Star, Swords } from 'lucide-react';
+import { audioManager } from '../audio/AudioManager';
 import { CHARACTER_SETS } from '../three/characterSets';
 import {
   AI_PROFILES,
@@ -29,7 +30,7 @@ export function MatchSetupScreen({
   const isAI = settings.mode === 'ai';
 
   return (
-    <section className="flex h-dvh w-full max-w-full flex-col overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_50%_12%,#1b2438_0%,#0b0f18_75%)] px-4 py-5 sm:px-8 sm:py-8">
+    <section className="animate-screen-in flex h-dvh w-full max-w-full flex-col overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_50%_12%,#1b2438_0%,#0b0f18_75%)] px-4 py-5 sm:px-8 sm:py-8">
       <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col">
         {/* Top Bar */}
         <header className="flex items-center justify-between gap-3 border-b border-amber-400/20 pb-4">
@@ -155,7 +156,11 @@ export function MatchSetupScreen({
                   <button
                     key={t.seconds}
                     type="button"
-                    onClick={() => onChangeTimeControl(t.seconds)}
+                    data-sfx="tab"
+                    onClick={() => {
+                      audioManager.playTabSwitch();
+                      onChangeTimeControl(t.seconds);
+                    }}
                     className={`flex min-h-[58px] flex-col items-center justify-center rounded-xl border px-3 py-2 text-center transition-all active:scale-[0.98] ${
                       selected
                         ? 'border-amber-400 bg-amber-400/18 text-amber-100 shadow-[0_0_18px_rgba(245,180,65,0.2)]'
@@ -177,7 +182,10 @@ export function MatchSetupScreen({
                 <input
                   type="checkbox"
                   checked={settings.autoFlipPvP}
-                  onChange={(e) => onChangeAutoFlip(e.target.checked)}
+                  onChange={(e) => {
+                    audioManager.playTabSwitch();
+                    onChangeAutoFlip(e.target.checked);
+                  }}
                   className="h-4 w-4 accent-amber-400"
                 />
               </label>

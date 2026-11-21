@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { ArrowLeft, Bot, ChevronRight, Swords } from 'lucide-react';
 import { ModePreviewCanvas } from '../three/ModePreviewCanvas';
 import type { GameMode } from '../types/chess';
@@ -7,9 +8,9 @@ interface ModeSelectScreenProps {
   onBack: () => void;
 }
 
-export function ModeSelectScreen({ onSelectMode, onBack }: ModeSelectScreenProps) {
+export const ModeSelectScreen = memo(function ModeSelectScreen({ onSelectMode, onBack }: ModeSelectScreenProps) {
   return (
-    <section className="flex h-dvh w-full max-w-full flex-col overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_50%_15%,#1b2438_0%,#0b0f18_75%)] px-4 py-5 sm:px-8 sm:py-8">
+    <section className="animate-screen-in flex h-dvh w-full max-w-full flex-col overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_50%_15%,#1b2438_0%,#0b0f18_75%)] px-4 py-5 sm:px-8 sm:py-8">
       <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col">
         {/* Top Bar */}
         <header className="flex items-center justify-between gap-4 border-b border-amber-400/20 pb-4">
@@ -112,4 +113,4 @@ export function ModeSelectScreen({ onSelectMode, onBack }: ModeSelectScreenProps
       </div>
     </section>
   );
-}
+});

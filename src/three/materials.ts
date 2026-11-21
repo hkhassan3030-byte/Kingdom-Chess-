@@ -2670,8 +2670,8 @@ export function createSceneMaterialBank(
       new THREE.MeshStandardMaterial({
         map: citadelStoneMaps.map,
         normalMap: citadelStoneMaps.normalMap,
-        normalScale: new THREE.Vector2(0.7, 0.7),
-        roughness: 0.74,
+        normalScale: new THREE.Vector2(0.75, 0.75),
+        roughness: 0.72,
         metalness: 0.08,
       })
     ),
@@ -2679,28 +2679,28 @@ export function createSceneMaterialBank(
       new THREE.MeshStandardMaterial({
         map: citadelStoneMaps.map,
         normalMap: citadelStoneMaps.normalMap,
-        normalScale: new THREE.Vector2(0.75, 0.75),
+        normalScale: new THREE.Vector2(0.78, 0.78),
         color: 0x8e98ab,
-        roughness: 0.78,
-        metalness: 0.1,
+        roughness: 0.74,
+        metalness: 0.12,
       })
     ),
     boardGoldTrim: track(
       new THREE.MeshStandardMaterial({
-        color: 0xb8965c,
-        metalness: 0.78,
-        roughness: 0.3,
-        envMapIntensity: 1.35,
+        color: 0xc29e60,
+        metalness: 0.82,
+        roughness: 0.26,
+        envMapIntensity: 1.4,
       })
     ),
     waterMoat: track(
       new THREE.MeshStandardMaterial({
         color: 0x0c1d2b,
         normalMap: waterNormalMap,
-        normalScale: new THREE.Vector2(0.36, 0.36),
+        normalScale: new THREE.Vector2(0.38, 0.38),
         roughness: 0.08,
-        metalness: 0.24,
-        envMapIntensity: 1.65,
+        metalness: 0.26,
+        envMapIntensity: 1.7,
       })
     ),
     waterNormalMap,

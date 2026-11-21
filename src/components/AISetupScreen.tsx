@@ -1,4 +1,5 @@
 import { ArrowLeft, ChevronRight, Crown, Star } from 'lucide-react';
+import { audioManager } from '../audio/AudioManager';
 import {
   AI_DIFFICULTY_ORDER,
   AI_PROFILES,
@@ -24,7 +25,7 @@ export function AISetupScreen({
   onBack,
 }: AISetupScreenProps) {
   return (
-    <section className="flex h-dvh w-full max-w-full flex-col overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_50%_10%,#1b2438_0%,#0b0f18_75%)] px-4 py-5 sm:px-8 sm:py-7">
+    <section className="animate-screen-in flex h-dvh w-full max-w-full flex-col overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_50%_10%,#1b2438_0%,#0b0f18_75%)] px-4 py-5 sm:px-8 sm:py-7">
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
         {/* Header */}
         <header className="flex items-center justify-between gap-3 border-b border-amber-400/20 pb-4">
@@ -53,7 +54,11 @@ export function AISetupScreen({
             <div className="mt-2.5 grid grid-cols-2 gap-3">
               <button
                 type="button"
-                onClick={() => onChangeColor('w')}
+                data-sfx="tab"
+                onClick={() => {
+                  audioManager.playTabSwitch();
+                  onChangeColor('w');
+                }}
                 className={`flex min-h-[68px] items-center gap-3 rounded-2xl border px-4 py-3 text-left transition-all active:scale-[0.985] ${
                   playerColor === 'w'
                     ? 'border-amber-400 bg-amber-400/14 shadow-[0_0_24px_rgba(245,180,65,0.2)]'
@@ -73,7 +78,11 @@ export function AISetupScreen({
 
               <button
                 type="button"
-                onClick={() => onChangeColor('b')}
+                data-sfx="tab"
+                onClick={() => {
+                  audioManager.playTabSwitch();
+                  onChangeColor('b');
+                }}
                 className={`flex min-h-[68px] items-center gap-3 rounded-2xl border px-4 py-3 text-left transition-all active:scale-[0.985] ${
                   playerColor === 'b'
                     ? 'border-amber-400 bg-rose-500/14 shadow-[0_0_24px_rgba(245,180,65,0.2)]'
@@ -107,7 +116,11 @@ export function AISetupScreen({
                   <button
                     key={id}
                     type="button"
-                    onClick={() => onChangeDifficulty(id)}
+                    data-sfx="tab"
+                    onClick={() => {
+                      audioManager.playTabSwitch();
+                      onChangeDifficulty(id);
+                    }}
                     className={`flex w-full items-start justify-between gap-3 rounded-2xl border px-4 py-3.5 text-left transition-all active:scale-[0.99] ${
                       selected
                         ? 'border-amber-400 bg-gradient-to-r from-amber-500/18 via-[#172033] to-[#121826] shadow-[0_0_24px_rgba(235,175,65,0.22)]'

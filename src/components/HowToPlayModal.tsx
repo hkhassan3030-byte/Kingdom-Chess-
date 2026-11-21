@@ -6,17 +6,18 @@ interface HowToPlayModalProps {
 
 export function HowToPlayModal({ onClose }: HowToPlayModalProps) {
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 sm:items-center sm:p-4">
-      <div className="fantasy-panel max-h-[88dvh] w-full max-w-lg overflow-y-auto rounded-t-3xl p-5 sm:rounded-2xl sm:p-6">
+    <div className="animate-modal-backdrop fixed inset-0 z-50 flex items-end justify-center bg-black/75 sm:items-center sm:p-4">
+      <div className="fantasy-panel animate-sheet-panel max-h-[88dvh] w-full max-w-lg overflow-y-auto rounded-t-3xl p-5 sm:rounded-2xl sm:p-6">
         <div className="flex items-center justify-between border-b border-amber-400/20 pb-3.5">
           <h2 className="font-display text-lg font-bold tracking-wider text-amber-100 sm:text-xl">
             HOW TO PLAY
           </h2>
           <button
             type="button"
+            data-sfx="custom"
             onClick={onClose}
             aria-label="Close How To Play"
-            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl border border-white/12 bg-white/5 text-slate-300 hover:text-white"
+            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl border border-white/12 bg-white/5 text-slate-300 transition-colors hover:text-white active:scale-95"
           >
             <X className="h-5 w-5" />
           </button>
@@ -70,6 +71,7 @@ export function HowToPlayModal({ onClose }: HowToPlayModalProps) {
 
         <button
           type="button"
+          data-sfx="custom"
           onClick={onClose}
           className="fantasy-btn-primary mt-5 flex min-h-[48px] w-full items-center justify-center rounded-xl text-sm font-bold tracking-wider uppercase"
         >

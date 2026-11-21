@@ -14,8 +14,8 @@ export function PauseModal({
   onMainMenu,
 }: PauseModalProps) {
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/75 p-4">
-      <div className="fantasy-panel w-full max-w-sm rounded-2xl p-6 text-center">
+    <div className="animate-modal-backdrop fixed inset-0 z-40 flex items-center justify-center bg-black/75 p-4">
+      <div className="fantasy-panel animate-modal-panel w-full max-w-sm rounded-2xl p-6 text-center">
         <h2 className="font-display text-xl font-bold tracking-wider text-amber-100">
           BATTLE PAUSED
         </h2>
@@ -24,6 +24,7 @@ export function PauseModal({
         <div className="mt-5 flex flex-col gap-2.5">
           <button
             type="button"
+            data-sfx="custom"
             onClick={onResume}
             className="fantasy-btn-primary flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl text-sm font-bold tracking-wide uppercase"
           >

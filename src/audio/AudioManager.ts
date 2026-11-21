@@ -51,10 +51,78 @@ function normalizeBuffer(data: Float32Array, targetPeak = 0.88) {
   }
 }
 
+export type MusicScene = 'home' | 'kingdoms' | 'gameplay' | 'victory' | 'defeat';
+export type GameOverOutcome = 'victory' | 'defeat' | 'draw';
+
+interface MusicThemeSpec {
+  droneA: number;
+  droneB: number;
+  filterHz: number;
+  stepMs: number;
+  notes: number[];
+  trim: number;
+  wave: OscillatorType;
+  subPulse: boolean;
+}
+
+const MUSIC_THEMES: Record<MusicScene, MusicThemeSpec> = {
+  home: {
+    droneA: 73.42, // D2
+    droneB: 110.0, // A2
+    filterHz: 260,
+    stepMs: 1200,
+    notes: [146.83, 220.0, 261.63, 293.66, 261.63, 220.0, 174.61, 196.0, 146.83, 220.0, 329.63, 293.66, 220.0, 174.61, 164.81, 220.0],
+    trim: 0.9,
+    wave: 'triangle',
+    subPulse: false,
+  },
+  kingdoms: {
+    droneA: 82.41, // E2
+    droneB: 123.47, // B2
+    filterHz: 290,
+    stepMs: 1020,
+    notes: [164.81, 246.94, 293.66, 329.63, 293.66, 246.94, 220.0, 246.94, 164.81, 246.94, 369.99, 329.63, 293.66, 220.0, 196.0, 246.94],
+    trim: 0.92,
+    wave: 'sine',
+    subPulse: false,
+  },
+  gameplay: {
+    droneA: 73.42, // D2
+    droneB: 109.75, // A2 subtle
+    filterHz: 230,
+    stepMs: 780,
+    notes: [146.83, 174.61, 220.0, 174.61, 146.83, 220.0, 261.63, 220.0, 130.81, 174.61, 220.0, 196.0, 146.83, 164.81, 174.61, 220.0],
+    trim: 0.76,
+    wave: 'triangle',
+    subPulse: true,
+  },
+  victory: {
+    droneA: 73.42, // D2
+    droneB: 146.83, // D3 noble
+    filterHz: 340,
+    stepMs: 880,
+    notes: [220.0, 293.66, 369.99, 440.0, 369.99, 293.66, 329.63, 440.0, 293.66, 369.99, 440.0, 587.33, 440.0, 369.99, 329.63, 293.66],
+    trim: 0.96,
+    wave: 'triangle',
+    subPulse: false,
+  },
+  defeat: {
+    droneA: 65.41, // C2 solemn
+    droneB: 98.0, // G2
+    filterHz: 195,
+    stepMs: 1380,
+    notes: [130.81, 155.56, 196.0, 155.56, 130.81, 146.83, 123.47, 130.81],
+    trim: 0.84,
+    wave: 'sine',
+    subPulse: false,
+  },
+};
+
 export class AudioManager {
   private ctx: AudioContext | null = null;
   private sfxBus: GainNode | null = null;
   private limiter: DynamicsCompressorNode | null = null;
+  private musicMasterGain: GainNode | null = null;
   private preloadedSet: CharacterSetId | null = null;
 
   // Cached physically synthesized or decoded Foley AudioBuffers (0 allocation during combat!)
@@ -65,6 +133,9 @@ export class AudioManager {
 
   private enabled = true;
   private musicEnabled = true;
+  private sfxVolume = 85;
+  private musicVolume = 70;
+  private muteAll = false;
   private unlocked = false;
 
   // Cooldown, anti-repetition & active voice tracking
@@ -73,19 +144,103 @@ export class AudioManager {
   private activeVoices: ActiveVoice[] = [];
   private readonly maxConcurrentVoices = 12;
 
-  // Ambient music state
-  private musicGain: GainNode | null = null;
+  // Context-aware ambient music state
+  private currentMusicScene: MusicScene = 'home';
+  private musicSceneGain: GainNode | null = null;
   private droneOscA: OscillatorNode | null = null;
   private droneOscB: OscillatorNode | null = null;
+  private droneFifthGain: GainNode | null = null;
   private droneFilter: BiquadFilterNode | null = null;
   private musicTimerId = 0;
   private musicStep = 0;
   private musicRunning = false;
+  private preloadIdleHandle = 0;
+  private preloadIdleIsRic = false;
+  private speechTimerId = 0;
+  private teardownTimerIds = new Set<number>();
 
-  private readonly musicNotes = [
-    146.83, 220.0, 261.63, 293.66, 261.63, 220.0, 174.61, 196.0,
-    146.83, 220.0, 329.63, 293.66, 220.0, 174.61, 164.81, 220.0,
-  ];
+  private canPlaySfx(): boolean {
+    return !this.muteAll && this.enabled && this.sfxVolume > 0;
+  }
+
+  private shouldPlayMusic(): boolean {
+    return !this.muteAll && this.musicEnabled && this.musicVolume > 0 && !document.hidden;
+  }
+
+  private getEffectiveSfxGain(): number {
+    if (!this.canPlaySfx()) return 0;
+    return Math.pow(Math.max(0, Math.min(100, this.sfxVolume)) / 100, 1.3);
+  }
+
+  private getEffectiveMusicGain(): number {
+    if (this.muteAll || !this.musicEnabled || this.musicVolume <= 0) return 0;
+    return Math.pow(Math.max(0, Math.min(100, this.musicVolume)) / 100, 1.35) * 0.088;
+  }
+
+  private syncBusGains() {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    if (this.sfxBus) {
+      try {
+        this.sfxBus.gain.cancelScheduledValues(now);
+        this.sfxBus.gain.setTargetAtTime(this.getEffectiveSfxGain(), now, 0.022);
+      } catch {
+        // Ignore teardown edge cases
+      }
+    }
+    if (this.musicMasterGain) {
+      try {
+        this.musicMasterGain.gain.cancelScheduledValues(now);
+        this.musicMasterGain.gain.setTargetAtTime(this.getEffectiveMusicGain(), now, 0.045);
+      } catch {
+        // Ignore teardown edge cases
+      }
+    }
+  }
+
+  /**
+   * Synchronizes independent Music Volume (0-100), SFX Volume (0-100), and Mute All
+   * immediately without cutting active sounds abruptly when raising/lowering levels.
+   */
+  public applyAudioSettings(opts: {
+    musicVolume?: number;
+    sfxVolume?: number;
+    muteAll?: boolean;
+    soundEnabled?: boolean;
+    musicEnabled?: boolean;
+  }) {
+    if (typeof opts.musicVolume === 'number' && Number.isFinite(opts.musicVolume)) {
+      this.musicVolume = Math.max(0, Math.min(100, Math.round(opts.musicVolume)));
+    }
+    if (typeof opts.sfxVolume === 'number' && Number.isFinite(opts.sfxVolume)) {
+      this.sfxVolume = Math.max(0, Math.min(100, Math.round(opts.sfxVolume)));
+    }
+    if (typeof opts.muteAll === 'boolean') {
+      this.muteAll = opts.muteAll;
+    }
+    if (typeof opts.soundEnabled === 'boolean' && opts.sfxVolume === undefined) {
+      this.enabled = opts.soundEnabled;
+    } else {
+      this.enabled = this.sfxVolume > 0 && !this.muteAll;
+    }
+    if (typeof opts.musicEnabled === 'boolean' && opts.musicVolume === undefined) {
+      this.musicEnabled = opts.musicEnabled;
+    } else {
+      this.musicEnabled = this.musicVolume > 0 && !this.muteAll;
+    }
+
+    this.syncBusGains();
+
+    if (!this.canPlaySfx()) {
+      this.stopAllCombatSfx();
+    }
+    if (!this.shouldPlayMusic()) {
+      this.stopMusic();
+    } else if (this.unlocked) {
+      this.startMusic(this.currentMusicScene);
+    }
+  }
 
   /**
    * Optional hook to register real licensed audio files (.ogg/.wav/.mp3) by cue key
@@ -94,7 +249,7 @@ export class AudioManager {
    */
   public registerExternalAsset(cueKey: string, url: string) {
     this.externalAssetUrls.set(cueKey, url);
-    if (this.ctx && this.enabled) {
+    if (this.ctx) {
       this.fetchAndDecodeExternalAsset(this.ctx, cueKey, url);
     }
   }
@@ -121,38 +276,60 @@ export class AudioManager {
 
   public setEnabled(val: boolean) {
     this.enabled = val;
+    this.syncBusGains();
     if (!val) {
       this.stopAllCombatSfx();
       this.stopMusic();
-    } else if (this.musicEnabled && this.unlocked && !document.hidden) {
-      this.startMusic();
+    } else if (this.shouldPlayMusic() && this.unlocked) {
+      this.startMusic(this.currentMusicScene);
     }
   }
 
   public setMusicEnabled(val: boolean) {
     this.musicEnabled = val;
-    if (!val || !this.enabled) {
+    this.syncBusGains();
+    if (!this.shouldPlayMusic()) {
       this.stopMusic();
-    } else if (this.unlocked && !document.hidden) {
-      this.startMusic();
+    } else if (this.unlocked) {
+      this.startMusic(this.currentMusicScene);
     }
+  }
+
+  public setMusicScene(scene: MusicScene) {
+    if (this.currentMusicScene === scene && this.musicRunning) return;
+    this.currentMusicScene = scene;
+    if (!this.unlocked || !this.shouldPlayMusic()) return;
+    this.startMusic(scene);
   }
 
   public unlock(activeSet: CharacterSetId = 'human') {
     this.unlocked = true;
     this.preload(activeSet);
-    if (this.enabled && this.musicEnabled && !document.hidden) {
-      this.startMusic();
+    if (this.shouldPlayMusic()) {
+      this.startMusic(this.currentMusicScene);
     }
   }
 
   public preload(activeSet: CharacterSetId = 'human') {
-    if (!this.enabled || typeof window === 'undefined') return;
+    if (typeof window === 'undefined') return;
     const ctx = this.getContext();
     if (!ctx) return;
     this.getSfxOutput(ctx);
+    this.getMusicMaster(ctx);
     this.warmCoreFoleyCache(ctx, activeSet);
     this.preloadedSet = activeSet;
+  }
+
+  private cancelPreloadIdle() {
+    if (!this.preloadIdleHandle || typeof window === 'undefined') return;
+    if (this.preloadIdleIsRic) {
+      const w = window as unknown as { cancelIdleCallback?: (id: number) => void };
+      w.cancelIdleCallback?.(this.preloadIdleHandle);
+    } else {
+      window.clearTimeout(this.preloadIdleHandle);
+    }
+    this.preloadIdleHandle = 0;
+    this.preloadIdleIsRic = false;
   }
 
   /**
@@ -160,10 +337,12 @@ export class AudioManager {
    * without stalling UI transitions or active gameplay frames.
    */
   public preloadSetAsync(setId: CharacterSetId) {
-    if (!this.enabled || typeof window === 'undefined') return;
+    if (typeof window === 'undefined') return;
     if (this.preloadedSet === setId) return;
+    this.cancelPreloadIdle();
     const run = () => {
-      if (!this.enabled) return;
+      this.preloadIdleHandle = 0;
+      this.preloadIdleIsRic = false;
       const ctx = this.getContext();
       if (!ctx) return;
       this.warmSetFoleyCache(ctx, setId);
@@ -171,9 +350,11 @@ export class AudioManager {
     };
     const w = window as unknown as { requestIdleCallback?: (cb: () => void) => number };
     if (typeof w.requestIdleCallback === 'function') {
-      w.requestIdleCallback(run);
+      this.preloadIdleIsRic = true;
+      this.preloadIdleHandle = w.requestIdleCallback(run);
     } else {
-      window.setTimeout(run, 16);
+      this.preloadIdleIsRic = false;
+      this.preloadIdleHandle = window.setTimeout(run, 16);
     }
   }
 
@@ -185,11 +366,12 @@ export class AudioManager {
         void this.ctx.suspend().catch(() => {});
       }
     } else {
-      if (this.ctx && this.ctx.state === 'suspended' && this.enabled) {
+      if (this.ctx && this.ctx.state === 'suspended' && (this.canPlaySfx() || this.shouldPlayMusic())) {
         void this.ctx.resume().catch(() => {});
       }
-      if (this.enabled && this.musicEnabled && this.unlocked) {
-        this.startMusic();
+      this.syncBusGains();
+      if (this.shouldPlayMusic() && this.unlocked) {
+        this.startMusic(this.currentMusicScene);
       }
     }
   }
@@ -220,6 +402,10 @@ export class AudioManager {
   }
 
   private cancelSpeech() {
+    if (this.speechTimerId && typeof window !== 'undefined') {
+      window.clearTimeout(this.speechTimerId);
+      this.speechTimerId = 0;
+    }
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     try {
       const synth = window.speechSynthesis;
@@ -235,7 +421,7 @@ export class AudioManager {
     text: string,
     options: { pitch: number; rate: number; volume: number; requireReadyVoices?: boolean }
   ) {
-    if (!this.enabled || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    if (!this.canPlaySfx() || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     try {
       const synth = window.speechSynthesis;
       if (!synth || typeof SpeechSynthesisUtterance === 'undefined') return;
@@ -249,7 +435,8 @@ export class AudioManager {
       utter.lang = 'en-GB';
       utter.pitch = options.pitch;
       utter.rate = options.rate;
-      utter.volume = Math.max(0, Math.min(1, options.volume));
+      const scaledVol = options.volume * (this.sfxVolume / 100);
+      utter.volume = Math.max(0, Math.min(1, scaledVol));
 
       if (voices.length > 0) {
         const preferred =
@@ -267,10 +454,16 @@ export class AudioManager {
         }
       }
 
+      if (this.speechTimerId) {
+        window.clearTimeout(this.speechTimerId);
+        this.speechTimerId = 0;
+      }
+
       if (synth.speaking || synth.pending) {
         synth.cancel();
-        window.setTimeout(() => {
-          if (this.enabled) {
+        this.speechTimerId = window.setTimeout(() => {
+          this.speechTimerId = 0;
+          if (this.canPlaySfx()) {
             try {
               synth.speak(utter);
             } catch {
@@ -305,7 +498,7 @@ export class AudioManager {
   }
 
   private getContext(): AudioContext | null {
-    if (!this.enabled || typeof window === 'undefined') return null;
+    if (typeof window === 'undefined') return null;
     if (!this.ctx) {
       const AudioCtx =
         window.AudioContext ||
@@ -331,10 +524,19 @@ export class AudioManager {
       this.limiter.connect(ctx.destination);
 
       this.sfxBus = ctx.createGain();
-      this.sfxBus.gain.setValueAtTime(1.0, ctx.currentTime);
+      this.sfxBus.gain.setValueAtTime(this.getEffectiveSfxGain(), ctx.currentTime);
       this.sfxBus.connect(this.limiter);
     }
     return this.sfxBus;
+  }
+
+  private getMusicMaster(ctx: AudioContext): GainNode {
+    if (!this.musicMasterGain || this.musicMasterGain.context !== ctx) {
+      this.musicMasterGain = ctx.createGain();
+      this.musicMasterGain.gain.setValueAtTime(this.getEffectiveMusicGain(), ctx.currentTime);
+      this.musicMasterGain.connect(ctx.destination);
+    }
+    return this.musicMasterGain;
   }
 
   private warmCoreFoleyCache(ctx: AudioContext, activeSet: CharacterSetId) {
@@ -362,11 +564,16 @@ export class AudioManager {
       this.bakeCheckmateHeraldBuffer(ctx, false)
     );
     this.getOrCreateBuffer(ctx, 'stinger:victory', () =>
-      this.bakeGameOverChordBuffer(ctx, true)
+      this.bakeGameOverChordBuffer(ctx, 'victory')
     );
     this.getOrCreateBuffer(ctx, 'stinger:defeat', () =>
-      this.bakeGameOverChordBuffer(ctx, false)
+      this.bakeGameOverChordBuffer(ctx, 'defeat')
     );
+    this.getOrCreateBuffer(ctx, 'stinger:draw', () =>
+      this.bakeGameOverChordBuffer(ctx, 'draw')
+    );
+    this.getOrCreateBuffer(ctx, 'stinger:promotion', () => this.bakePromotionBuffer(ctx));
+    this.getOrCreateBuffer(ctx, 'stinger:gamestart', () => this.bakeGameStartBuffer(ctx));
     this.warmSetFoleyCache(ctx, activeSet);
   }
 
@@ -396,9 +603,11 @@ export class AudioManager {
           () => this.bakeWeaponImpactBuffer(ctx, setId, profile.weaponClass, 'heavyArmor', true, v)
         );
       }
-      this.getOrCreateBuffer(ctx, `death:${setId}:${piece}:${v}`, () =>
-        this.bakeDeathVocalBuffer(ctx, profile, v)
-      );
+      if (piece !== 'p') {
+        this.getOrCreateBuffer(ctx, `death:${setId}:${piece}:${v}`, () =>
+          this.bakeDeathVocalBuffer(ctx, profile, v)
+        );
+      }
     }
   }
 
@@ -482,7 +691,7 @@ export class AudioManager {
     minIntervalMs: number,
     priority: SoundPriority
   ): boolean {
-    if (!this.enabled) return false;
+    if (!this.canPlaySfx()) return false;
     const activeCount = this.pruneVoices(this.ctx);
 
     // Priority 1 (Checkmate) & Priority 2 (Death Vocal) are never dropped by minor sound caps
@@ -502,11 +711,11 @@ export class AudioManager {
     return true;
   }
 
-  private pickVariation(key: string): number {
+  private pickVariation(key: string, count = 3): number {
     const prev = this.lastVariation.get(key) ?? -1;
-    let next = Math.floor(Math.random() * 3);
-    if (next === prev) {
-      next = (next + 1 + Math.floor(Math.random() * 2)) % 3;
+    let next = Math.floor(Math.random() * count);
+    if (next === prev && count > 1) {
+      next = (next + 1 + Math.floor(Math.random() * (count - 1))) % count;
     }
     this.lastVariation.set(key, next);
     return next;
@@ -518,7 +727,7 @@ export class AudioManager {
    * - Active character set (Human, Titan, Inferno, Shadow, Celestial)
    * - Attacker's equipped weapon (heavySword, sword, axe, hammer, spear, dagger, glaive, staff, magicStaff, bow, arrow)
    * - Defender's physical defense material (shield, heavyArmor, lightArmor, robes, wood)
-   * - Defender's class & set vocal tone on lethal defeat ('deathVocal')
+   * - Defender's class & set vocal tone on lethal defeat ('deathVocal' — non-pawns only)
    */
   public playCombatSound(
     characterSet: CharacterSetId,
@@ -530,7 +739,7 @@ export class AudioManager {
       weaponOverride?: WeaponClass;
     }
   ) {
-    if (!this.enabled) return;
+    if (!this.canPlaySfx()) return;
     if (this.preloadedSet !== characterSet) {
       this.preload(characterSet);
     }
@@ -539,6 +748,11 @@ export class AudioManager {
 
     const attacker = getCharacterAudioProfile(characterSet, characterClass);
     const defenderPiece: PieceType = options?.defenderClass ?? characterClass;
+    // Never play dramatic death vocals on ordinary pawn captures
+    if (action === 'deathVocal' && defenderPiece === 'p') {
+      return;
+    }
+
     const defender = getCharacterAudioProfile(characterSet, defenderPiece);
     const weapon: WeaponClass = options?.weaponOverride ?? attacker.weaponClass;
 
@@ -558,9 +772,10 @@ export class AudioManager {
         : `${characterSet}:${characterClass}:${weapon}:${action}`;
     if (!this.canPlayWithPriority(cueKey, minInterval, priority)) return;
 
-    const vIdx = this.pickVariation(cueKey);
+    const variationPoolSize = action === 'deathVocal' ? 4 : 3;
+    const vIdx = this.pickVariation(cueKey, variationPoolSize);
     const vol = PRIORITY_VOLUME[priority] * attacker.classGain;
-    const rateJitter = [0.96, 1.0, 1.05][vIdx];
+    const rateJitter = [0.95, 1.0, 1.04, 0.98][vIdx] ?? 1.0;
     const rate = attacker.pitchScale * rateJitter;
 
     if (action === 'deathVocal') {
@@ -663,21 +878,37 @@ export class AudioManager {
       }
 
       case 'deathVocal': {
-        const defVol = PRIORITY_VOLUME[priority] * defender.classGain;
+        const isMajorHero = defenderPiece === 'k' || defenderPiece === 'q' || defenderPiece === 'r';
+        const defVol = PRIORITY_VOLUME[priority] * defender.classGain * (isMajorHero ? 1.08 : 0.8);
         const key = `death:${characterSet}:${defenderPiece}:${vIdx}`;
         const buf = this.getOrCreateBuffer(ctx, key, () =>
           this.bakeDeathVocalBuffer(ctx, defender, vIdx)
         );
-        this.playCachedBuffer(ctx, buf, 0.56 * defVol, rateJitter, priority, true);
+        this.playCachedBuffer(
+          ctx,
+          buf,
+          (isMajorHero ? 0.58 : 0.44) * defVol,
+          rateJitter,
+          priority,
+          true
+        );
         break;
       }
 
       case 'defenderReaction': {
-        const key = `defend:fall:${characterSet}:${defender.defenseClass}:${vIdx}`;
+        const isMinor = defenderPiece === 'p';
+        const key = `defend:fall:${characterSet}:${defender.defenseClass}:${vIdx % 3}`;
         const buf = this.getOrCreateBuffer(ctx, key, () =>
-          this.bakeBodyFallBuffer(ctx, characterSet, defender.defenseClass, vIdx)
+          this.bakeBodyFallBuffer(ctx, characterSet, defender.defenseClass, vIdx % 3)
         );
-        this.playCachedBuffer(ctx, buf, 0.4 * PRIORITY_VOLUME[priority], 1.0, priority, true);
+        this.playCachedBuffer(
+          ctx,
+          buf,
+          (isMinor ? 0.34 : 0.42) * PRIORITY_VOLUME[priority],
+          isMinor ? 1.08 : 1.0,
+          priority,
+          true
+        );
         break;
       }
     }
@@ -1304,18 +1535,23 @@ export class AudioManager {
         vIdx * 37
     );
 
+    const isMajorHero =
+      defender.pieceType === 'k' || defender.pieceType === 'q' || defender.pieceType === 'r';
     const dur =
       defender.pieceType === 'k' || defender.pieceType === 'r'
-        ? 0.48
+        ? 0.54
         : defender.pieceType === 'q'
-        ? 0.42
-        : 0.38;
+        ? 0.48
+        : 0.3;
     const len = Math.floor(sr * dur);
     const buf = ctx.createBuffer(1, len, sr);
     const data = buf.getChannelData(0);
 
-    const f0Start = defender.vocalBaseHz * [0.97, 1.0, 1.04][vIdx];
-    const f0End = f0Start * (defender.pieceType === 'q' ? 0.62 : 0.56);
+    const f0Start =
+      defender.vocalBaseHz *
+      ([0.96, 1.0, 1.04, 0.93][vIdx] ?? 1.0) *
+      (isMajorHero ? 1.03 : 0.99);
+    const f0End = f0Start * (defender.pieceType === 'q' ? 0.6 : isMajorHero ? 0.52 : 0.64);
 
     const isFemale = defender.pieceType === 'q';
     // Moving 2-stage vowel trajectory ("AAH!" shock opening -> "UHH" collapsed exhale)
@@ -1693,32 +1929,38 @@ export class AudioManager {
     return buf;
   }
 
-  private bakeGameOverChordBuffer(ctx: AudioContext, victory: boolean): AudioBuffer {
+  private bakeGameOverChordBuffer(ctx: AudioContext, outcome: GameOverOutcome): AudioBuffer {
     const sr = ctx.sampleRate;
-    const rng = makeRng(victory ? 8801 : 8807);
-    const dur = 1.25;
+    const rng = makeRng(outcome === 'victory' ? 8801 : outcome === 'defeat' ? 8807 : 8819);
+    const dur = outcome === 'draw' ? 1.15 : 1.3;
     const len = Math.floor(sr * dur);
     const buf = ctx.createBuffer(1, len, sr);
     const data = buf.getChannelData(0);
 
-    // Somber cinematic brass/bell cadence (D major heroic for victory, D minor solemn for defeat)
-    const freqs = victory ? [146.83, 220.0, 293.66, 369.99] : [146.83, 174.61, 220.0, 277.18];
+    // Heroic D major for victory, solemn D minor for defeat, hollow balanced D-A-E fifths for draw
+    const freqs =
+      outcome === 'victory'
+        ? [146.83, 220.0, 293.66, 369.99]
+        : outcome === 'defeat'
+        ? [146.83, 174.61, 220.0, 277.18]
+        : [146.83, 220.0, 293.66, 329.63];
+
     let lp = 0;
     for (let i = 0; i < len; i++) {
       const t = i / sr;
       const n = rng();
       let s = 0;
       for (let k = 0; k < freqs.length; k++) {
-        const onset = k * 0.075;
+        const onset = k * (outcome === 'draw' ? 0.09 : 0.075);
         if (t >= onset) {
           const dt = t - onset;
-          const env = Math.min(1, dt / 0.06) * Math.exp(-dt * 2.25);
+          const env = Math.min(1, dt / 0.055) * Math.exp(-dt * (outcome === 'draw' ? 2.6 : 2.25));
           const f = freqs[k];
           s +=
             (Math.sin(2 * Math.PI * f * dt) * 0.54 +
-              Math.sin(2 * Math.PI * f * 2 * dt) * 0.26 +
-              Math.sin(2 * Math.PI * f * 3 * dt) * 0.12 +
-              n * 0.03) *
+              Math.sin(2 * Math.PI * f * 2 * dt) * 0.24 +
+              Math.sin(2 * Math.PI * f * 3 * dt) * 0.1 +
+              n * 0.025) *
             env;
         }
       }
@@ -1727,109 +1969,286 @@ export class AudioManager {
     }
 
     this.applyCourtyardReflections(data, sr, 0.3, 1.25);
-    normalizeBuffer(data, 0.8);
+    normalizeBuffer(data, outcome === 'draw' ? 0.72 : 0.8);
+    return buf;
+  }
+
+  private bakePromotionBuffer(ctx: AudioContext): AudioBuffer {
+    const sr = ctx.sampleRate;
+    const rng = makeRng(9341);
+    const dur = 0.92;
+    const len = Math.floor(sr * dur);
+    const buf = ctx.createBuffer(1, len, sr);
+    const data = buf.getChannelData(0);
+
+    // Ascending magical crystal/celestial chime arpeggio (D4 -> F#4 -> A4 -> D5 -> F#5)
+    const notes = [293.66, 369.99, 440.0, 587.33, 739.99];
+    let bp = 0;
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      const n = rng();
+      const fc = Math.min(0.75, (2 * Math.PI * (700 + t * 2200)) / sr);
+      lp += fc * bp;
+      bp += fc * (n - lp - 0.28 * bp);
+      const shimmer = bp * Math.sin(Math.min(1, t / dur) * Math.PI) * 0.22;
+
+      let chord = 0;
+      for (let k = 0; k < notes.length; k++) {
+        const onset = k * 0.072;
+        if (t >= onset) {
+          const dt = t - onset;
+          const env = Math.min(1, dt / 0.015) * Math.exp(-dt * 4.2);
+          const f = notes[k];
+          chord +=
+            (Math.sin(2 * Math.PI * f * dt) * 0.5 +
+              Math.sin(2 * Math.PI * f * 2 * dt) * 0.24 +
+              Math.sin(2 * Math.PI * f * 3.01 * dt) * 0.08) *
+            env;
+        }
+      }
+      data[i] = chord + shimmer;
+    }
+
+    this.applyCourtyardReflections(data, sr, 0.3, 1.15);
+    normalizeBuffer(data, 0.78);
+    return buf;
+  }
+
+  private bakeGameStartBuffer(ctx: AudioContext): AudioBuffer {
+    const sr = ctx.sampleRate;
+    const rng = makeRng(9511);
+    const dur = 0.78;
+    const len = Math.floor(sr * dur);
+    const buf = ctx.createBuffer(1, len, sr);
+    const data = buf.getChannelData(0);
+
+    // Heraldic twin-horn fifth + solid medieval war drum brace
+    let hornLp = 0;
+    let bodyPhase = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      const n = rng();
+      const fBody = 58 + 90 * Math.exp(-t * 60);
+      bodyPhase += fBody / sr;
+      const drum = Math.sin(2 * Math.PI * bodyPhase) * Math.exp(-t * 14) * 0.72;
+
+      const hornEnv = Math.min(1, t / 0.04) * Math.exp(-t * 3.2);
+      const hornRaw =
+        Math.sin(2 * Math.PI * 146.83 * t) * 0.42 +
+        Math.sin(2 * Math.PI * 220.0 * t) * 0.36 +
+        Math.sin(2 * Math.PI * 293.66 * t) * 0.2 +
+        n * 0.06;
+      hornLp = hornLp * 0.72 + hornRaw * 0.28;
+
+      const ring =
+        t >= 0.09
+          ? Math.sin(2 * Math.PI * 440.0 * (t - 0.09)) * Math.exp(-(t - 0.09) * 8.5) * 0.22
+          : 0;
+      data[i] = drum + hornLp * hornEnv * 0.85 + ring;
+    }
+
+    this.applyCourtyardReflections(data, sr, 0.26, 1.1);
+    normalizeBuffer(data, 0.78);
+    return buf;
+  }
+
+  private bakeTimerTickBuffer(ctx: AudioContext, urgent: boolean): AudioBuffer {
+    const sr = ctx.sampleRate;
+    const rng = makeRng(urgent ? 5503 : 5501);
+    const dur = 0.065;
+    const len = Math.floor(sr * dur);
+    const buf = ctx.createBuffer(1, len, sr);
+    const data = buf.getChannelData(0);
+
+    const f1 = urgent ? 1280 : 980;
+    let prev = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      const n = rng();
+      const hp = n - prev * 0.8;
+      prev = n;
+      const click =
+        (Math.sin(2 * Math.PI * f1 * t) * 0.46 +
+          Math.sin(2 * Math.PI * f1 * 1.92 * t) * 0.2) *
+        Math.exp(-t * 115);
+      data[i] = click + hp * Math.exp(-t * 150) * 0.32;
+    }
+
+    normalizeBuffer(data, 0.56);
+    return buf;
+  }
+
+  private bakeUndoBuffer(ctx: AudioContext): AudioBuffer {
+    const sr = ctx.sampleRate;
+    const rng = makeRng(4703);
+    const dur = 0.14;
+    const len = Math.floor(sr * dur);
+    const buf = ctx.createBuffer(1, len, sr);
+    const data = buf.getChannelData(0);
+
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      const p = i / len;
+      const n = rng();
+      lp = lp * 0.72 + n * 0.28;
+      const f = 460 - p * 170;
+      const slide = Math.sin(2 * Math.PI * f * t) * Math.exp(-t * 36) * 0.45;
+      const brush = (n - lp) * Math.sin(p * Math.PI) * 0.35;
+      data[i] = slide + brush;
+    }
+
+    normalizeBuffer(data, 0.65);
+    return buf;
+  }
+
+  private bakeModalBuffer(ctx: AudioContext, opening: boolean): AudioBuffer {
+    const sr = ctx.sampleRate;
+    const rng = makeRng(opening ? 3209 : 3217);
+    const dur = 0.12;
+    const len = Math.floor(sr * dur);
+    const buf = ctx.createBuffer(1, len, sr);
+    const data = buf.getChannelData(0);
+
+    const fA = opening ? 420 : 520;
+    const fB = opening ? 630 : 340;
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      const p = i / len;
+      const n = rng();
+      lp = lp * 0.7 + n * 0.3;
+      const f = fA + (fB - fA) * p;
+      const tone = Math.sin(2 * Math.PI * f * t) * Math.exp(-t * 34) * 0.45;
+      const air = (n - lp) * Math.exp(-t * 48) * 0.32;
+      data[i] = tone + air;
+    }
+
+    normalizeBuffer(data, 0.58);
+    return buf;
+  }
+
+  private bakeKingdomSelectBuffer(ctx: AudioContext, setId: CharacterSetId): AudioBuffer {
+    const sr = ctx.sampleRate;
+    const rng = makeRng(6200 + setId.charCodeAt(0) * 19);
+    const dur = 0.36;
+    const len = Math.floor(sr * dur);
+    const buf = ctx.createBuffer(1, len, sr);
+    const data = buf.getChannelData(0);
+
+    const freqs =
+      setId === 'human'
+        ? [293.66, 440.0, 587.33]
+        : setId === 'titan'
+        ? [329.63, 493.88, 659.25]
+        : setId === 'inferno'
+        ? [220.0, 329.63, 440.0]
+        : setId === 'shadow'
+        ? [246.94, 293.66, 440.0]
+        : [392.0, 587.33, 783.99];
+
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      const n = rng();
+      lp = lp * 0.75 + n * 0.25;
+      let s = 0;
+      for (let k = 0; k < freqs.length; k++) {
+        const dt = Math.max(0, t - k * 0.032);
+        if (t >= k * 0.032) {
+          s +=
+            (Math.sin(2 * Math.PI * freqs[k] * dt) * 0.5 +
+              Math.sin(2 * Math.PI * freqs[k] * 2 * dt) * 0.18) *
+            Math.exp(-dt * 9.5);
+        }
+      }
+      data[i] = s + (n - lp) * Math.exp(-t * 40) * 0.14;
+    }
+
+    this.applyCourtyardReflections(data, sr, 0.22, 0.9);
+    normalizeBuffer(data, 0.68);
+    return buf;
+  }
+
+  private bakeHeroSelectBuffer(
+    ctx: AudioContext,
+    setId: CharacterSetId,
+    pieceType: PieceType
+  ): AudioBuffer {
+    const sr = ctx.sampleRate;
+    const rng = makeRng(2401 + setId.charCodeAt(0) * 29 + pieceType.charCodeAt(0) * 13);
+    const dur = 0.085;
+    const len = Math.floor(sr * dur);
+    const buf = ctx.createBuffer(1, len, sr);
+    const data = buf.getChannelData(0);
+
+    const profile = getCharacterAudioProfile(setId, pieceType);
+    const baseHz =
+      profile.usesMagic
+        ? 980
+        : pieceType === 'k' || pieceType === 'q'
+        ? 760
+        : pieceType === 'r'
+        ? 520
+        : pieceType === 'n'
+        ? 860
+        : 690;
+
+    let prev = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      const n = rng();
+      const hp = n - prev * 0.76;
+      prev = n;
+      const body =
+        (Math.sin(2 * Math.PI * baseHz * t) * 0.45 +
+          Math.sin(2 * Math.PI * baseHz * (profile.usesMagic ? 1.5 : 1.98) * t) * 0.2) *
+        Math.exp(-t * (profile.usesMagic ? 44 : 85));
+      data[i] = body + hp * Math.exp(-t * 135) * 0.34;
+    }
+
+    normalizeBuffer(data, 0.62);
     return buf;
   }
 
   // ---------------------------------------------------------------------------
-  // Ambient Music & Non-Combat Board/UI Calls
+  // Context-Aware Crossfading Background Music & UI/Board SFX
   // ---------------------------------------------------------------------------
 
-  public startMusic() {
-    if (this.musicRunning || !this.enabled || !this.musicEnabled || document.hidden) return;
-    const ctx = this.getContext();
-    if (!ctx) return;
-
-    this.musicRunning = true;
-    const now = ctx.currentTime;
-
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.linearRampToValueAtTime(0.04, now + 1.8);
-    gain.connect(ctx.destination);
-    this.musicGain = gain;
-
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(250, now);
-    filter.connect(gain);
-    this.droneFilter = filter;
-
-    const oscA = ctx.createOscillator();
-    oscA.type = 'sine';
-    oscA.frequency.setValueAtTime(73.42, now);
-    oscA.connect(filter);
-    oscA.start(now);
-    this.droneOscA = oscA;
-
-    const oscB = ctx.createOscillator();
-    oscB.type = 'triangle';
-    oscB.frequency.setValueAtTime(110.0, now);
-    const fifthGain = ctx.createGain();
-    fifthGain.gain.setValueAtTime(0.35, now);
-    oscB.connect(fifthGain);
-    fifthGain.connect(filter);
-    oscB.start(now);
-    this.droneOscB = oscB;
-
-    this.musicTimerId = window.setInterval(() => {
-      if (!this.musicRunning || !this.enabled || !this.musicEnabled || document.hidden) return;
-      const c = this.ctx;
-      const master = this.musicGain;
-      if (!c || !master || c.state !== 'running') return;
-
-      const t = c.currentTime;
-      const freq = this.musicNotes[this.musicStep % this.musicNotes.length];
-      this.musicStep++;
-
-      const pluck = c.createOscillator();
-      const pluckGain = c.createGain();
-      const pluckFilter = c.createBiquadFilter();
-      pluck.type = 'triangle';
-      pluck.frequency.setValueAtTime(freq, t);
-
-      pluckFilter.type = 'lowpass';
-      pluckFilter.frequency.setValueAtTime(freq * 3.1, t);
-      pluckFilter.frequency.exponentialRampToValueAtTime(freq * 1.1, t + 1.3);
-
-      pluckGain.gain.setValueAtTime(0.0001, t);
-      pluckGain.gain.linearRampToValueAtTime(0.26, t + 0.04);
-      pluckGain.gain.exponentialRampToValueAtTime(0.0008, t + 1.45);
-
-      pluck.connect(pluckFilter);
-      pluckFilter.connect(pluckGain);
-      pluckGain.connect(master);
-      pluck.start(t);
-      pluck.stop(t + 1.5);
-    }, 1150);
-  }
-
-  public stopMusic() {
-    this.musicRunning = false;
+  private teardownCurrentMusicTrack(fadeSec: number) {
     if (this.musicTimerId) {
       window.clearInterval(this.musicTimerId);
       this.musicTimerId = 0;
     }
     const ctx = this.ctx;
-    if (this.musicGain && ctx) {
+    const oldGain = this.musicSceneGain;
+    const oscA = this.droneOscA;
+    const oscB = this.droneOscB;
+    const fifthGain = this.droneFifthGain;
+    const droneFilter = this.droneFilter;
+
+    this.musicSceneGain = null;
+    this.droneOscA = null;
+    this.droneOscB = null;
+    this.droneFifthGain = null;
+    this.droneFilter = null;
+
+    if (oldGain && ctx) {
       try {
         const now = ctx.currentTime;
-        this.musicGain.gain.cancelScheduledValues(now);
-        this.musicGain.gain.setValueAtTime(Math.max(0.0001, this.musicGain.gain.value), now);
-        this.musicGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+        oldGain.gain.cancelScheduledValues(now);
+        oldGain.gain.setValueAtTime(Math.max(0.0001, oldGain.gain.value), now);
+        oldGain.gain.exponentialRampToValueAtTime(0.0001, now + fadeSec);
       } catch {
         // Ignore teardown edge cases
       }
     }
-    const oscA = this.droneOscA;
-    const oscB = this.droneOscB;
-    this.droneOscA = null;
-    this.droneOscB = null;
-    this.droneFilter = null;
-    this.musicGain = null;
 
-    if (oscA || oscB) {
-      window.setTimeout(() => {
+    if (oscA || oscB || fifthGain || droneFilter || oldGain) {
+      const cleanupDelayMs = Math.round(fadeSec * 1000) + 60;
+      const tid = window.setTimeout(() => {
+        this.teardownTimerIds.delete(tid);
         try {
           oscA?.stop();
           oscA?.disconnect();
@@ -1842,8 +2261,138 @@ export class AudioManager {
         } catch {
           // ignore
         }
-      }, 220);
+        try {
+          fifthGain?.disconnect();
+          droneFilter?.disconnect();
+          oldGain?.disconnect();
+        } catch {
+          // ignore
+        }
+      }, cleanupDelayMs);
+      this.teardownTimerIds.add(tid);
     }
+  }
+
+  public startMusic(scene: MusicScene = this.currentMusicScene) {
+    if (!this.shouldPlayMusic()) return;
+    if (this.musicRunning && this.currentMusicScene === scene && this.musicSceneGain) return;
+
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    this.currentMusicScene = scene;
+    if (this.musicRunning || this.musicSceneGain) {
+      this.teardownCurrentMusicTrack(0.55);
+    }
+
+    const theme = MUSIC_THEMES[scene];
+    this.musicRunning = true;
+    this.musicStep = 0;
+
+    const now = ctx.currentTime;
+    const master = this.getMusicMaster(ctx);
+    this.syncBusGains();
+
+    const sceneGain = ctx.createGain();
+    sceneGain.gain.setValueAtTime(0.0001, now);
+    sceneGain.gain.linearRampToValueAtTime(theme.trim, now + 0.85);
+    sceneGain.connect(master);
+    this.musicSceneGain = sceneGain;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(theme.filterHz, now);
+    filter.connect(sceneGain);
+    this.droneFilter = filter;
+
+    const oscA = ctx.createOscillator();
+    oscA.type = 'sine';
+    oscA.frequency.setValueAtTime(theme.droneA, now);
+    oscA.connect(filter);
+    oscA.start(now);
+    this.droneOscA = oscA;
+
+    const oscB = ctx.createOscillator();
+    oscB.type = 'triangle';
+    oscB.frequency.setValueAtTime(theme.droneB, now);
+    const fifthGain = ctx.createGain();
+    fifthGain.gain.setValueAtTime(0.32, now);
+    oscB.connect(fifthGain);
+    fifthGain.connect(filter);
+    oscB.start(now);
+    this.droneOscB = oscB;
+    this.droneFifthGain = fifthGain;
+
+    this.musicTimerId = window.setInterval(() => {
+      if (!this.musicRunning || !this.shouldPlayMusic()) return;
+      const c = this.ctx;
+      const targetSceneGain = this.musicSceneGain;
+      if (!c || !targetSceneGain || c.state !== 'running') return;
+
+      const t = c.currentTime;
+      const activeTheme = MUSIC_THEMES[this.currentMusicScene];
+      const stepIdx = this.musicStep;
+      const freq = activeTheme.notes[stepIdx % activeTheme.notes.length];
+      this.musicStep++;
+
+      const pluck = c.createOscillator();
+      const pluckGain = c.createGain();
+      const pluckFilter = c.createBiquadFilter();
+      pluck.type = activeTheme.wave;
+      pluck.frequency.setValueAtTime(freq, t);
+
+      pluckFilter.type = 'lowpass';
+      pluckFilter.frequency.setValueAtTime(freq * 2.9, t);
+      pluckFilter.frequency.exponentialRampToValueAtTime(freq * 1.15, t + 1.1);
+
+      pluckGain.gain.setValueAtTime(0.0001, t);
+      pluckGain.gain.linearRampToValueAtTime(0.24, t + 0.04);
+      pluckGain.gain.exponentialRampToValueAtTime(0.0008, t + 1.28);
+
+      pluck.connect(pluckFilter);
+      pluckFilter.connect(pluckGain);
+      pluckGain.connect(targetSceneGain);
+      pluck.onended = () => {
+        try {
+          pluck.disconnect();
+          pluckFilter.disconnect();
+          pluckGain.disconnect();
+        } catch {
+          // ignore
+        }
+      };
+      pluck.start(t);
+      pluck.stop(t + 1.32);
+
+      // Subtle low battle frame drum pulse every 2 steps during gameplay
+      if (activeTheme.subPulse && stepIdx % 2 === 0) {
+        const pulse = c.createOscillator();
+        const pulseGain = c.createGain();
+        pulse.type = 'sine';
+        pulse.frequency.setValueAtTime(84, t);
+        pulse.frequency.exponentialRampToValueAtTime(46, t + 0.16);
+        pulseGain.gain.setValueAtTime(0.0001, t);
+        pulseGain.gain.linearRampToValueAtTime(0.28, t + 0.012);
+        pulseGain.gain.exponentialRampToValueAtTime(0.0008, t + 0.22);
+        pulse.connect(pulseGain);
+        pulseGain.connect(targetSceneGain);
+        pulse.onended = () => {
+          try {
+            pulse.disconnect();
+            pulseGain.disconnect();
+          } catch {
+            // ignore
+          }
+        };
+        pulse.start(t);
+        pulse.stop(t + 0.24);
+      }
+    }, theme.stepMs);
+  }
+
+  public stopMusic() {
+    this.musicRunning = false;
+    this.teardownCurrentMusicTrack(0.22);
   }
 
   public playButtonClick() {
@@ -1856,6 +2405,59 @@ export class AudioManager {
       this.bakeUiClickBuffer(ctx, false, vIdx)
     );
     this.playCachedBuffer(ctx, buf, 0.16, 1.0, 5, false);
+  }
+
+  public playTabSwitch() {
+    if (!this.canPlayWithPriority('ui:tab', 55, 5)) return;
+    if (!this.preloadedSet) this.preload();
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const vIdx = this.pickVariation('ui:select');
+    const buf = this.getOrCreateBuffer(ctx, `ui:select:${vIdx}`, () =>
+      this.bakeUiClickBuffer(ctx, true, vIdx)
+    );
+    this.playCachedBuffer(ctx, buf, 0.14, 1.08, 5, false);
+  }
+
+  public playModalOpen() {
+    if (!this.canPlayWithPriority('ui:modal:open', 90, 5)) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const buf = this.getOrCreateBuffer(ctx, 'ui:modal:open', () =>
+      this.bakeModalBuffer(ctx, true)
+    );
+    this.playCachedBuffer(ctx, buf, 0.18, 1.0, 5, false);
+  }
+
+  public playModalClose() {
+    if (!this.canPlayWithPriority('ui:modal:close', 90, 5)) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const buf = this.getOrCreateBuffer(ctx, 'ui:modal:close', () =>
+      this.bakeModalBuffer(ctx, false)
+    );
+    this.playCachedBuffer(ctx, buf, 0.16, 1.0, 5, false);
+  }
+
+  public playKingdomSelect(characterSet: CharacterSetId) {
+    if (!this.canPlayWithPriority('ui:kingdom', 85, 4)) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const buf = this.getOrCreateBuffer(ctx, `ui:kingdom:${characterSet}`, () =>
+      this.bakeKingdomSelectBuffer(ctx, characterSet)
+    );
+    this.playCachedBuffer(ctx, buf, 0.24, 1.0, 4, false);
+  }
+
+  public playHeroSelect(characterSet: CharacterSetId, pieceType: PieceType) {
+    if (!this.canPlayWithPriority('ui:hero', 65, 5)) return;
+    if (this.preloadedSet !== characterSet) this.preload(characterSet);
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const buf = this.getOrCreateBuffer(ctx, `ui:hero:${characterSet}:${pieceType}`, () =>
+      this.bakeHeroSelectBuffer(ctx, characterSet, pieceType)
+    );
+    this.playCachedBuffer(ctx, buf, 0.22, 1.0, 5, false);
   }
 
   public playSelect() {
@@ -1875,10 +2477,6 @@ export class AudioManager {
    */
   public playPieceMove(characterSet: CharacterSetId, pieceType: PieceType) {
     const profile = getCharacterAudioProfile(characterSet, pieceType);
-    if (profile.isMounted) {
-      this.playCombatSound(characterSet, pieceType, 'horseMove');
-      return;
-    }
     if (!this.canPlayWithPriority('chess:move', 85, 4)) return;
     if (this.preloadedSet !== characterSet) this.preload(characterSet);
     const ctx = this.getContext();
@@ -1891,6 +2489,14 @@ export class AudioManager {
       this.bakeStoneMoveBuffer(ctx, targetWeight, vIdx)
     );
     this.playCachedBuffer(ctx, buf, 0.3, 1.0, 4, false);
+
+    if (profile.isMounted) {
+      const hIdx = this.pickVariation(`hoof:${characterSet}`);
+      const hoofBuf = this.getOrCreateBuffer(ctx, `hoof:${characterSet}:${hIdx}`, () =>
+        this.bakeHoofBuffer(ctx, characterSet, hIdx)
+      );
+      this.playCachedBuffer(ctx, hoofBuf, 0.16, 1.04, 4, false);
+    }
   }
 
   public playMove() {
@@ -1899,6 +2505,46 @@ export class AudioManager {
 
   public playHorseGallop() {
     this.playCombatSound('human', 'n', 'horseMove');
+  }
+
+  public playUndo() {
+    if (!this.canPlayWithPriority('chess:undo', 110, 4)) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const buf = this.getOrCreateBuffer(ctx, 'chess:undo', () => this.bakeUndoBuffer(ctx));
+    this.playCachedBuffer(ctx, buf, 0.24, 1.0, 4, false);
+  }
+
+  public playPromotion() {
+    if (!this.canPlayWithPriority('chess:promotion', 320, 2)) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const buf = this.getOrCreateBuffer(ctx, 'stinger:promotion', () =>
+      this.bakePromotionBuffer(ctx)
+    );
+    this.playCachedBuffer(ctx, buf, 0.34, 1.0, 2, false);
+  }
+
+  public playGameStart() {
+    if (!this.canPlayWithPriority('chess:gamestart', 350, 2)) return;
+    if (!this.preloadedSet) this.preload();
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const buf = this.getOrCreateBuffer(ctx, 'stinger:gamestart', () =>
+      this.bakeGameStartBuffer(ctx)
+    );
+    this.playCachedBuffer(ctx, buf, 0.28, 1.0, 2, false);
+  }
+
+  public playTimerWarning(urgent = false) {
+    if (!this.canPlayWithPriority('chess:timer', 750, 4)) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const key = urgent ? 'chess:timer:urgent' : 'chess:timer:soft';
+    const buf = this.getOrCreateBuffer(ctx, key, () =>
+      this.bakeTimerTickBuffer(ctx, urgent)
+    );
+    this.playCachedBuffer(ctx, buf, urgent ? 0.16 : 0.11, 1.0, 4, false);
   }
 
   /**
@@ -1970,21 +2616,34 @@ export class AudioManager {
     });
   }
 
-  public playGameOver(victory: boolean) {
+  public playDraw() {
+    this.playGameOver('draw');
+  }
+
+  public playGameOver(outcomeOrVictory: GameOverOutcome | boolean) {
     if (!this.canPlayWithPriority('chess:gameover', 400, 1)) return;
     if (!this.preloadedSet) this.preload();
     const ctx = this.getContext();
     if (!ctx) return;
-    const key = victory ? 'stinger:victory' : 'stinger:defeat';
+    const outcome: GameOverOutcome =
+      typeof outcomeOrVictory === 'boolean'
+        ? outcomeOrVictory
+          ? 'victory'
+          : 'defeat'
+        : outcomeOrVictory;
+    const key = `stinger:${outcome}`;
     const buf = this.getOrCreateBuffer(ctx, key, () =>
-      this.bakeGameOverChordBuffer(ctx, victory)
+      this.bakeGameOverChordBuffer(ctx, outcome)
     );
     this.playCachedBuffer(ctx, buf, 0.34, 1.0, 1, false);
   }
 
   public cleanup() {
+    this.cancelPreloadIdle();
     this.stopAllCombatSfx();
     this.stopMusic();
+    this.teardownTimerIds.forEach((tid) => window.clearTimeout(tid));
+    this.teardownTimerIds.clear();
     this.lastPlayed.clear();
     this.lastVariation.clear();
     this.activeVoices.length = 0;
@@ -1997,6 +2656,7 @@ export class AudioManager {
     }
     this.sfxBus = null;
     this.limiter = null;
+    this.musicMasterGain = null;
   }
 }
 

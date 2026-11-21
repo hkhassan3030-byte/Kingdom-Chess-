@@ -15,9 +15,38 @@ export interface GameSettings {
   characterSet: CharacterSetId;
   soundEnabled: boolean;
   musicEnabled: boolean;
+  musicVolume: number;
+  sfxVolume: number;
+  muteAll: boolean;
   showCoordinates: boolean;
   quality: GraphicsQuality;
   autoFlipPvP: boolean;
+}
+
+export type MatchResult = 'win' | 'loss' | 'draw';
+
+export interface MatchHistoryEntry {
+  id: string;
+  mode: GameMode;
+  opponent: string;
+  playerColor: PieceColor;
+  winner: PieceColor | 'draw' | null;
+  result: MatchResult;
+  reason: GameStatus['reason'];
+  moveCount: number;
+  ratingDelta: number;
+  playedAt: number;
+}
+
+export interface PlayerProfile {
+  name: string;
+  avatarId: 'crown' | 'knight' | 'sword' | 'shield';
+  level: number;
+  rating: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  recentMatches: MatchHistoryEntry[];
 }
 
 export interface AIProfile {

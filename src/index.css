@@ -93,6 +93,120 @@
   transform: scale(0.975);
 }
 
+@keyframes modalFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modalPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes sheetPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes screenFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes bannerDropIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-modal-backdrop {
+  animation: modalFadeIn 150ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-modal-panel {
+  animation: modalPanelIn 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-sheet-panel {
+  animation: sheetPanelIn 210ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (min-width: 640px) {
+  .animate-sheet-panel {
+    animation-name: modalPanelIn;
+  }
+}
+
+.animate-screen-in {
+  animation: screenFadeIn 190ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-banner-in {
+  animation: bannerDropIn 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Custom Dark Fantasy Volume Slider */
+.fantasy-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 8px;
+  border-radius: 9999px;
+  outline: none;
+  cursor: pointer;
+}
+
+.fantasy-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  background: linear-gradient(180deg, #fde68a 0%, #d49a30 100%);
+  border: 2px solid #0b0f18;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.65);
+  transition: transform 120ms ease;
+}
+
+.fantasy-slider::-webkit-slider-thumb:active {
+  transform: scale(1.12);
+}
+
+.fantasy-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  background: linear-gradient(180deg, #fde68a 0%, #d49a30 100%);
+  border: 2px solid #0b0f18;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.65);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

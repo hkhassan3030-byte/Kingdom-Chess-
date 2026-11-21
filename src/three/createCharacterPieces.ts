@@ -592,6 +592,8 @@ export function createCharacterGeometryBank(): CharacterGeometryBank {
   return bankFromBuild;
 }
 
+const _tmpShadowPos = new THREE.Vector3();
+const _tmpShadowQuat = new THREE.Quaternion();
 const _tmpMaxScale = new THREE.Vector3();
 
 function enableShadows(obj: THREE.Object3D) {
@@ -603,8 +605,8 @@ function enableShadows(obj: THREE.Object3D) {
         mesh.geometry.computeBoundingSphere();
       }
       mesh.matrixWorld.decompose(
-        new THREE.Vector3(),
-        new THREE.Quaternion(),
+        _tmpShadowPos,
+        _tmpShadowQuat,
         _tmpMaxScale
       );
       const maxScale = Math.max(

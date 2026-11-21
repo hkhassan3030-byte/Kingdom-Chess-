@@ -3,7 +3,7 @@ import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { Chess, type Move, type Square } from 'chess.js';
-import { audioManager } from './audio/AudioManager';
+import { audioManager, type MusicScene } from './audio/AudioManager';
 import { AISetupScreen } from './components/AISetupScreen';
 import { ChessViewport } from './components/ChessViewport';
 import { GameHUD } from './components/GameHUD';
@@ -14,6 +14,7 @@ import { KingdomSelectScreen } from './components/KingdomSelectScreen';
 import { MatchSetupScreen } from './components/MatchSetupScreen';
 import { ModeSelectScreen } from './components/ModeSelectScreen';
 import { PauseModal } from './components/PauseModal';
+import { ProfileModal } from './components/ProfileModal';
 import { PromotionModal } from './components/PromotionModal';
 import { SettingsModal } from './components/SettingsModal';
 import { computeAIMoveAsync } from './engine/aiController';
@@ -22,20 +23,103 @@ import type { ChessSceneController } from './three/ChessSceneController';
 import type { CombatSoundEvent } from './three/combatChoreography';
 import { DevPerfOverlay } from './utils/devPerfMonitor';
 import {
+  AI_PROFILES,
   PIECE_LABELS,
   type BoardPiece,
   type CapturedState,
   type CharacterSetId,
   type GameSettings,
   type GameStatus,
+  type MatchHistoryEntry,
   type MoveAnimationPayload,
   type PendingPromotion,
   type PieceColor,
   type PieceType,
+  type PlayerProfile,
   type ScreenView,
 } from './types/chess';
 
 const SETTINGS_STORAGE_KEY = 'kingdom-chess-settings-v2';
+const PROFILE_STORAGE_KEY = 'kingdom-chess-profile-v1';
+const MAX_RECENT_MATCHES = 20;
+
+const DEFAULT_PROFILE: PlayerProfile = {
+  name: 'Commander',
+  avatarId: 'crown',
+  level: 1,
+  rating: 1200,
+  wins: 0,
+  draws: 0,
+  losses: 0,
+  recentMatches: [],
+};
+
+function sanitizeRecentMatches(raw: unknown): MatchHistoryEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const valid: MatchHistoryEntry[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const entry = item as Partial<MatchHistoryEntry>;
+    if (
+      typeof entry.id === 'string' &&
+      (entry.mode === 'ai' || entry.mode === 'pvp') &&
+      typeof entry.opponent === 'string' &&
+      (entry.playerColor === 'w' || entry.playerColor === 'b') &&
+      (entry.result === 'win' || entry.result === 'loss' || entry.result === 'draw') &&
+      typeof entry.playedAt === 'number'
+    ) {
+      valid.push({
+        id: entry.id,
+        mode: entry.mode,
+        opponent: entry.opponent,
+        playerColor: entry.playerColor,
+        winner:
+          entry.winner === 'w' || entry.winner === 'b' || entry.winner === 'draw'
+            ? entry.winner
+            : null,
+        result: entry.result,
+        reason: entry.reason ?? null,
+        moveCount: typeof entry.moveCount === 'number' ? Math.max(0, Math.floor(entry.moveCount)) : 0,
+        ratingDelta: typeof entry.ratingDelta === 'number' ? Math.round(entry.ratingDelta) : 0,
+        playedAt: entry.playedAt,
+      });
+    }
+    if (valid.length >= MAX_RECENT_MATCHES) break;
+  }
+  return valid;
+}
+
+function loadInitialProfile(): PlayerProfile {
+  try {
+    const raw = window.localStorage.getItem(PROFILE_STORAGE_KEY);
+    if (!raw) return DEFAULT_PROFILE;
+    const parsed = JSON.parse(raw) as Partial<PlayerProfile>;
+    const validAvatars: Array<PlayerProfile['avatarId']> = ['crown', 'knight', 'sword', 'shield'];
+    const avatarId = validAvatars.includes(parsed.avatarId as PlayerProfile['avatarId'])
+      ? (parsed.avatarId as PlayerProfile['avatarId'])
+      : DEFAULT_PROFILE.avatarId;
+    const name =
+      typeof parsed.name === 'string' && parsed.name.trim().length > 0
+        ? parsed.name.trim().slice(0, 18)
+        : DEFAULT_PROFILE.name;
+    return {
+      name,
+      avatarId,
+      level: typeof parsed.level === 'number' && parsed.level >= 1 ? Math.floor(parsed.level) : 1,
+      rating:
+        typeof parsed.rating === 'number' && parsed.rating >= 400
+          ? Math.floor(parsed.rating)
+          : 1200,
+      wins: typeof parsed.wins === 'number' && parsed.wins >= 0 ? Math.floor(parsed.wins) : 0,
+      draws: typeof parsed.draws === 'number' && parsed.draws >= 0 ? Math.floor(parsed.draws) : 0,
+      losses:
+        typeof parsed.losses === 'number' && parsed.losses >= 0 ? Math.floor(parsed.losses) : 0,
+      recentMatches: sanitizeRecentMatches(parsed.recentMatches),
+    };
+  } catch {
+    return DEFAULT_PROFILE;
+  }
+}
 
 const DEFAULT_SETTINGS: GameSettings = {
   mode: 'ai',
@@ -45,10 +129,18 @@ const DEFAULT_SETTINGS: GameSettings = {
   timeControlSeconds: 600,
   soundEnabled: true,
   musicEnabled: true,
+  musicVolume: 70,
+  sfxVolume: 85,
+  muteAll: false,
   showCoordinates: true,
   quality: 'high',
   autoFlipPvP: false,
 };
+
+function clampVolume(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
 
 function loadInitialSettings(): GameSettings {
   try {
@@ -58,10 +150,33 @@ function loadInitialSettings(): GameSettings {
     const validSet = CHARACTER_SET_ORDER.includes(parsed.characterSet as CharacterSetId)
       ? (parsed.characterSet as CharacterSetId)
       : DEFAULT_SETTINGS.characterSet;
+
+    let musicVolume = clampVolume(parsed.musicVolume, DEFAULT_SETTINGS.musicVolume);
+    let sfxVolume = clampVolume(parsed.sfxVolume, DEFAULT_SETTINGS.sfxVolume);
+    let muteAll = typeof parsed.muteAll === 'boolean' ? parsed.muteAll : false;
+
+    if (parsed.muteAll === undefined) {
+      if (parsed.soundEnabled === false && parsed.musicEnabled === false) {
+        muteAll = true;
+      } else {
+        if (parsed.sfxVolume === undefined && parsed.soundEnabled === false) {
+          sfxVolume = 0;
+        }
+        if (parsed.musicVolume === undefined && parsed.musicEnabled === false) {
+          musicVolume = 0;
+        }
+      }
+    }
+
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
       characterSet: validSet,
+      musicVolume,
+      sfxVolume,
+      muteAll,
+      soundEnabled: !muteAll && sfxVolume > 0,
+      musicEnabled: !muteAll && musicVolume > 0,
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -218,6 +333,7 @@ export default function App() {
 
   const [screen, setScreen] = useState<ScreenView>('home');
   const [settings, setSettings] = useState<GameSettings>(loadInitialSettings);
+  const [profile, setProfile] = useState<PlayerProfile>(loadInitialProfile);
   const [pieces, setPieces] = useState<BoardPiece[]>(() => extractPieces(chessRef.current));
   const [captured, setCaptured] = useState<CapturedState>({ w: [], b: [] });
   const [forcedEnd, setForcedEnd] = useState<{
@@ -233,19 +349,26 @@ export default function App() {
   const [isAIThinking, setIsAIThinking] = useState(false);
   const [aiMessage, setAiMessage] = useState<string | null>(null);
 
-  const [whiteTime, setWhiteTime] = useState<number>(settings.timeControlSeconds);
-  const [blackTime, setBlackTime] = useState<number>(settings.timeControlSeconds);
+  const [matchClockKey, setMatchClockKey] = useState(0);
 
   const [isPaused, setIsPaused] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [howToPlayOpen, setHowToPlayOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [dismissedGameOver, setDismissedGameOver] = useState(false);
 
   const matchEpochRef = useRef(0);
   const animStartEpochRef = useRef(0);
   const checkmateAnnouncedEpochRef = useRef(-1);
+  const recordedOutcomeEpochRef = useRef(-1);
+  const pendingPromotionMoveRef = useRef(false);
   const aiAbortRef = useRef<AbortController | null>(null);
   const camResetTimerRef = useRef(0);
+  const profileMountedRef = useRef(false);
+  const forcedEndRef = useRef<{
+    winner: PieceColor;
+    reason: 'timeout' | 'resignation';
+  } | null>(null);
 
   // Persist user preferences safely (debounced so rapid toggles never block UI frames)
   useEffect(() => {
@@ -259,14 +382,132 @@ export default function App() {
     return () => window.clearTimeout(saveTimer);
   }, [settings]);
 
-  // Sync audio & music preferences
   useEffect(() => {
-    audioManager.setEnabled(settings.soundEnabled);
-  }, [settings.soundEnabled]);
+    if (!profileMountedRef.current) {
+      profileMountedRef.current = true;
+      return;
+    }
+    try {
+      window.localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [profile]);
 
+  // Record finished match outcome & history once per match epoch (abandoned games never set isGameOver)
   useEffect(() => {
-    audioManager.setMusicEnabled(settings.musicEnabled);
-  }, [settings.musicEnabled]);
+    if (!status.isGameOver || pendingAnimation) return;
+    if (recordedOutcomeEpochRef.current === matchEpochRef.current) return;
+    recordedOutcomeEpochRef.current = matchEpochRef.current;
+
+    const isAI = settings.mode === 'ai';
+    const isDraw = status.winner === 'draw';
+    const didWin = isAI ? status.winner === settings.playerColor : status.winner === 'w';
+    const result: MatchHistoryEntry['result'] = isDraw ? 'draw' : didWin ? 'win' : 'loss';
+    const ratingDelta = isAI ? (didWin ? 18 : isDraw ? 2 : -12) : 0;
+    const aiProfile = AI_PROFILES[settings.difficulty];
+    const opponent = isAI ? `${aiProfile.label} · ${aiProfile.persona}` : 'Local 1 vs 1';
+
+    const matchEntry: MatchHistoryEntry = {
+      id: `match-${Date.now()}-${matchEpochRef.current}`,
+      mode: settings.mode,
+      opponent,
+      playerColor: isAI ? settings.playerColor : 'w',
+      winner: status.winner,
+      result,
+      reason: status.reason,
+      moveCount: status.moveCount,
+      ratingDelta,
+      playedAt: Date.now(),
+    };
+
+    setProfile((prev) => {
+      const nextRecentMatches = [matchEntry, ...(prev.recentMatches ?? [])].slice(
+        0,
+        MAX_RECENT_MATCHES
+      );
+
+      if (!isAI) {
+        return {
+          ...prev,
+          recentMatches: nextRecentMatches,
+        };
+      }
+
+      const nextWins = prev.wins + (didWin ? 1 : 0);
+      const nextDraws = prev.draws + (isDraw ? 1 : 0);
+      const nextLosses = prev.losses + (!didWin && !isDraw ? 1 : 0);
+      const nextRating = Math.max(800, prev.rating + ratingDelta);
+      const nextLevel = Math.max(prev.level, 1 + Math.floor((nextWins * 2 + nextDraws) / 3));
+      return {
+        ...prev,
+        level: nextLevel,
+        rating: nextRating,
+        wins: nextWins,
+        draws: nextDraws,
+        losses: nextLosses,
+        recentMatches: nextRecentMatches,
+      };
+    });
+  }, [
+    status.isGameOver,
+    status.winner,
+    status.reason,
+    status.moveCount,
+    pendingAnimation,
+    settings.mode,
+    settings.playerColor,
+    settings.difficulty,
+  ]);
+
+  // Sync independent audio volumes & mute state (paused while SettingsModal live-previews)
+  useEffect(() => {
+    if (settingsOpen) return;
+    audioManager.applyAudioSettings({
+      musicVolume: settings.musicVolume,
+      sfxVolume: settings.sfxVolume,
+      muteAll: settings.muteAll,
+      soundEnabled: settings.soundEnabled,
+      musicEnabled: settings.musicEnabled,
+    });
+  }, [
+    settingsOpen,
+    settings.musicVolume,
+    settings.sfxVolume,
+    settings.muteAll,
+    settings.soundEnabled,
+    settings.musicEnabled,
+  ]);
+
+  // Context-aware background music (home, kingdoms, gameplay, victory, defeat)
+  useEffect(() => {
+    let scene: MusicScene = 'home';
+    if (screen === 'home' || screen === 'modes') {
+      scene = 'home';
+    } else if (screen === 'kingdoms' || screen === 'ai-setup' || screen === 'match-setup') {
+      scene = 'kingdoms';
+    } else if (screen === 'playing') {
+      if (status.isGameOver && !pendingAnimation) {
+        if (status.winner === 'draw') {
+          scene = 'kingdoms';
+        } else if (settings.mode === 'ai' && status.winner !== settings.playerColor) {
+          scene = 'defeat';
+        } else {
+          scene = 'victory';
+        }
+      } else {
+        scene = 'gameplay';
+      }
+    }
+    audioManager.setMusicScene(scene);
+  }, [
+    screen,
+    status.isGameOver,
+    status.winner,
+    pendingAnimation,
+    settings.mode,
+    settings.playerColor,
+  ]);
 
   useEffect(() => {
     audioManager.preloadSetAsync(settings.characterSet);
@@ -303,6 +544,7 @@ export default function App() {
     mode: settings.mode,
     howToPlayOpen,
     settingsOpen,
+    profileOpen,
     hasPendingPromotion: Boolean(pendingPromotion),
     isPaused,
     isGameOver: status.isGameOver,
@@ -313,6 +555,7 @@ export default function App() {
     mode: settings.mode,
     howToPlayOpen,
     settingsOpen,
+    profileOpen,
     hasPendingPromotion: Boolean(pendingPromotion),
     isPaused,
     isGameOver: status.isGameOver,
@@ -329,23 +572,36 @@ export default function App() {
     let listenerHandle: { remove: () => Promise<void> } | null = null;
     void CapacitorApp.addListener('backButton', () => {
       const st = backStateRef.current;
+      if (st.profileOpen) {
+        audioManager.playModalClose();
+        setProfileOpen(false);
+        return;
+      }
       if (st.howToPlayOpen) {
+        audioManager.playModalClose();
         setHowToPlayOpen(false);
         return;
       }
       if (st.settingsOpen) {
+        audioManager.playModalClose();
         setSettingsOpen(false);
         return;
       }
       if (st.hasPendingPromotion) {
+        audioManager.playModalClose();
         setPendingPromotion(null);
         setSelectedSquare(null);
         return;
       }
       if (st.screen === 'playing') {
         if (st.isGameOver) {
+          if (st.dismissedGameOver) {
+            setDismissedGameOver(false);
+            return;
+          }
           matchEpochRef.current++;
           checkmateAnnouncedEpochRef.current = -1;
+          pendingPromotionMoveRef.current = false;
           aiAbortRef.current?.abort();
           window.clearTimeout(camResetTimerRef.current);
           audioManager.stopAllCombatSfx();
@@ -356,7 +612,14 @@ export default function App() {
           setIsPaused(false);
           setScreen('home');
         } else {
-          setIsPaused((prev) => !prev);
+          setIsPaused((prev) => {
+            if (prev) {
+              audioManager.playModalClose();
+            } else {
+              audioManager.playModalOpen();
+            }
+            return !prev;
+          });
         }
         return;
       }
@@ -423,6 +686,7 @@ export default function App() {
   const executeMove = useCallback(
     (from: string, to: string, promotion?: Exclude<PieceType, 'p' | 'k'>) => {
       const chess = chessRef.current;
+      if (forcedEndRef.current || chess.isGameOver()) return false;
       let move: Move;
       try {
         move = chess.move({ from, to, promotion });
@@ -434,6 +698,7 @@ export default function App() {
       setPendingPromotion(null);
 
       const payload = moveToAnimationPayload(move);
+      pendingPromotionMoveRef.current = Boolean(payload.promotion);
       if (!payload.captured) {
         audioManager.playPieceMove(settings.characterSet, payload.piece);
       }
@@ -447,12 +712,20 @@ export default function App() {
   const handleAnimationComplete = useCallback(
     () => {
       if (animStartEpochRef.current !== matchEpochRef.current) return;
+      const wasPromotion = pendingPromotionMoveRef.current;
+      pendingPromotionMoveRef.current = false;
+
       const chess = chessRef.current;
       setPendingAnimation(null);
       refreshReactFromChess(forcedEnd);
 
+      if (wasPromotion) {
+        audioManager.playPromotion();
+      }
+
       if (chess.isGameOver()) {
         const nextStatus = buildStatus(chess, forcedEnd);
+        const isDraw = nextStatus.winner === 'draw';
         const isHumanWin =
           settings.mode === 'pvp' || nextStatus.winner === settings.playerColor;
         if (nextStatus.reason === 'checkmate' || chess.isCheckmate()) {
@@ -460,8 +733,10 @@ export default function App() {
             checkmateAnnouncedEpochRef.current = matchEpochRef.current;
             audioManager.playCheckmateAnnouncement(isHumanWin);
           }
+        } else if (isDraw) {
+          audioManager.playDraw();
         } else {
-          audioManager.playGameOver(false);
+          audioManager.playGameOver(isHumanWin ? 'victory' : 'defeat');
         }
         setDismissedGameOver(false);
       } else if (chess.inCheck()) {
@@ -508,6 +783,7 @@ export default function App() {
         if (matchingMoves.length > 0) {
           const isPromo = matchingMoves.some((m) => Boolean(m.promotion));
           if (isPromo) {
+            audioManager.playModalOpen();
             setPendingPromotion({
               from: selectedSquare,
               to: square,
@@ -520,7 +796,7 @@ export default function App() {
         }
 
         if (clickedPiece && clickedPiece.color === chess.turn()) {
-          audioManager.playSelect();
+          audioManager.playHeroSelect(settings.characterSet, clickedPiece.type);
           setSelectedSquare(square);
           return;
         }
@@ -530,7 +806,7 @@ export default function App() {
       }
 
       if (clickedPiece && clickedPiece.color === chess.turn()) {
-        audioManager.playSelect();
+        audioManager.playHeroSelect(settings.characterSet, clickedPiece.type);
         setSelectedSquare(square);
       }
     },
@@ -543,6 +819,7 @@ export default function App() {
       isPaused,
       settings.mode,
       settings.playerColor,
+      settings.characterSet,
       selectedSquare,
       executeMove,
     ]
@@ -557,6 +834,7 @@ export default function App() {
       status.isGameOver ||
       pendingAnimation ||
       pendingPromotion ||
+      settingsOpen ||
       isPaused ||
       chess.turn() === settings.playerColor
     ) {
@@ -604,70 +882,40 @@ export default function App() {
     status.moveCount,
     pendingAnimation,
     pendingPromotion,
+    settingsOpen,
     isPaused,
     executeMove,
   ]);
 
-  // Chess Clocks
-  useEffect(() => {
-    if (
-      screen !== 'playing' ||
-      settings.timeControlSeconds === 0 ||
-      status.isGameOver ||
-      status.moveCount === 0 ||
-      pendingAnimation ||
-      settingsOpen ||
-      isPaused
-    ) {
-      return;
-    }
-
-    const interval = window.setInterval(() => {
-      if (status.turn === 'w') {
-        setWhiteTime((prev) => {
-          if (prev <= 1) {
-            const endState = { winner: 'b' as PieceColor, reason: 'timeout' as const };
-            setForcedEnd(endState);
-            setStatus(buildStatus(chessRef.current, endState));
-            setDismissedGameOver(false);
-            audioManager.playGameOver(settings.mode === 'ai' ? settings.playerColor === 'b' : true);
-            return 0;
-          }
-          return prev - 1;
-        });
-      } else {
-        setBlackTime((prev) => {
-          if (prev <= 1) {
-            const endState = { winner: 'w' as PieceColor, reason: 'timeout' as const };
-            setForcedEnd(endState);
-            setStatus(buildStatus(chessRef.current, endState));
-            setDismissedGameOver(false);
-            audioManager.playGameOver(settings.mode === 'ai' ? settings.playerColor === 'w' : true);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }
-    }, 1000);
-
-    return () => window.clearInterval(interval);
-  }, [
-    screen,
-    settings.timeControlSeconds,
-    settings.mode,
-    settings.playerColor,
-    status.isGameOver,
-    status.moveCount,
-    status.turn,
-    pendingAnimation,
-    settingsOpen,
-    isPaused,
-  ]);
+  const handleTimeout = useCallback(
+    (winner: PieceColor) => {
+      if (forcedEndRef.current || chessRef.current.isGameOver()) return;
+      aiAbortRef.current?.abort();
+      aiAbortRef.current = null;
+      setIsAIThinking(false);
+      setPendingPromotion(null);
+      setSelectedSquare(null);
+      const endState = { winner, reason: 'timeout' as const };
+      forcedEndRef.current = endState;
+      setForcedEnd(endState);
+      setStatus(buildStatus(chessRef.current, endState));
+      setDismissedGameOver(false);
+      audioManager.playGameOver(
+        settings.mode === 'ai'
+          ? settings.playerColor === winner
+            ? 'victory'
+            : 'defeat'
+          : 'victory'
+      );
+    },
+    [settings.mode, settings.playerColor]
+  );
 
   const startFreshMatch = useCallback(
     (nextSettings: GameSettings) => {
       const epoch = ++matchEpochRef.current;
       checkmateAnnouncedEpochRef.current = -1;
+      pendingPromotionMoveRef.current = false;
       aiAbortRef.current?.abort();
       aiAbortRef.current = null;
       window.clearTimeout(camResetTimerRef.current);
@@ -683,19 +931,20 @@ export default function App() {
       setSelectedSquare(null);
       setIsAIThinking(false);
       setAiMessage(null);
+      forcedEndRef.current = null;
       setForcedEnd(null);
       setIsPaused(false);
       setSettingsOpen(false);
       setHowToPlayOpen(false);
       setDismissedGameOver(false);
-      setWhiteTime(nextSettings.timeControlSeconds);
-      setBlackTime(nextSettings.timeControlSeconds);
+      setMatchClockKey((k) => k + 1);
 
       setPieces(freshPieces);
       setCaptured({ w: [], b: [] });
       setCheckSquare(null);
       setStatus(buildStatus(freshChess, null, []));
       setScreen('playing');
+      audioManager.playGameStart();
 
       const camSide: PieceColor =
         nextSettings.mode === 'ai' ? nextSettings.playerColor : 'w';
@@ -718,19 +967,32 @@ export default function App() {
   }, [settings, startFreshMatch]);
 
   const handleResign = useCallback(() => {
-    if (status.isGameOver || pendingAnimation) return;
+    if (
+      forcedEndRef.current ||
+      status.isGameOver ||
+      chessRef.current.isGameOver() ||
+      pendingAnimation
+    ) {
+      return;
+    }
+    aiAbortRef.current?.abort();
+    aiAbortRef.current = null;
+    setIsAIThinking(false);
+    setPendingPromotion(null);
+    setSelectedSquare(null);
     const loser: PieceColor =
       settings.mode === 'ai' ? settings.playerColor : status.turn;
     const winner: PieceColor = loser === 'w' ? 'b' : 'w';
     const endState = { winner, reason: 'resignation' as const };
+    forcedEndRef.current = endState;
     setForcedEnd(endState);
     setStatus(buildStatus(chessRef.current, endState));
     setDismissedGameOver(false);
-    audioManager.playGameOver(false);
+    audioManager.playGameOver('defeat');
   }, [status.isGameOver, status.turn, pendingAnimation, settings.mode, settings.playerColor]);
 
   const handleUndo = useCallback(() => {
-    if (pendingAnimation || isAIThinking || isPaused) return;
+    if (status.isGameOver || pendingAnimation || isAIThinking || isPaused) return;
     const chess = chessRef.current;
     const historyLen = chess.history().length;
     if (historyLen === 0) return;
@@ -748,13 +1010,16 @@ export default function App() {
 
     setSelectedSquare(null);
     setPendingPromotion(null);
+    forcedEndRef.current = null;
     setForcedEnd(null);
     setAiMessage(null);
     setDismissedGameOver(false);
     checkmateAnnouncedEpochRef.current = -1;
+    pendingPromotionMoveRef.current = false;
     refreshReactFromChess(null);
-    audioManager.playSelect();
+    audioManager.playUndo();
   }, [
+    status.isGameOver,
     pendingAnimation,
     isAIThinking,
     isPaused,
@@ -776,6 +1041,7 @@ export default function App() {
   const handleReturnToMenu = useCallback(() => {
     matchEpochRef.current++;
     checkmateAnnouncedEpochRef.current = -1;
+    pendingPromotionMoveRef.current = false;
     aiAbortRef.current?.abort();
     aiAbortRef.current = null;
     window.clearTimeout(camResetTimerRef.current);
@@ -786,6 +1052,7 @@ export default function App() {
     setPendingAnimation(null);
     setPendingPromotion(null);
     setSelectedSquare(null);
+    forcedEndRef.current = null;
     setForcedEnd(null);
     setAiMessage(null);
     setIsPaused(false);
@@ -794,6 +1061,7 @@ export default function App() {
   }, []);
 
   const canUndo =
+    !status.isGameOver &&
     !pendingAnimation &&
     !isAIThinking &&
     !isPaused &&
@@ -817,12 +1085,95 @@ export default function App() {
     (e: React.MouseEvent<HTMLElement>) => {
       audioManager.unlock(settings.characterSet);
       const target = e.target as HTMLElement | null;
+      if (target?.closest('button[data-sfx]')) {
+        return;
+      }
       if (target?.closest('button:not(:disabled)')) {
         audioManager.playButtonClick();
       }
     },
     [settings.characterSet]
   );
+
+  const handleOpenProfile = useCallback(() => {
+    audioManager.playModalOpen();
+    setProfileOpen(true);
+  }, []);
+
+  const handleCloseProfile = useCallback(() => {
+    audioManager.playModalClose();
+    setProfileOpen(false);
+  }, []);
+
+  const handleGoModes = useCallback(() => setScreen('modes'), []);
+  const handleGoHome = useCallback(() => setScreen('home'), []);
+
+  const handleOpenSettings = useCallback(() => {
+    audioManager.playModalOpen();
+    setSettingsOpen(true);
+  }, []);
+
+  const handleCloseSettings = useCallback(() => {
+    audioManager.playModalClose();
+    setSettingsOpen(false);
+  }, []);
+
+  const handleOpenHowToPlay = useCallback(() => {
+    audioManager.playModalOpen();
+    setHowToPlayOpen(true);
+  }, []);
+
+  const handleCloseHowToPlay = useCallback(() => {
+    audioManager.playModalClose();
+    setHowToPlayOpen(false);
+  }, []);
+
+  const handleSelectMode = useCallback((mode: GameSettings['mode']) => {
+    setSettings((s) => ({ ...s, mode }));
+    setScreen('kingdoms');
+  }, []);
+
+  const handleSelectSet = useCallback((characterSet: CharacterSetId) => {
+    audioManager.playKingdomSelect(characterSet);
+    setSettings((s) => ({ ...s, characterSet }));
+  }, []);
+
+  const handleKingdomContinue = useCallback(() => {
+    setScreen(settings.mode === 'ai' ? 'ai-setup' : 'match-setup');
+  }, [settings.mode]);
+
+  const handlePauseGame = useCallback(() => {
+    audioManager.playModalOpen();
+    setIsPaused(true);
+  }, []);
+
+  const handleResumeGame = useCallback(() => {
+    audioManager.playModalClose();
+    setIsPaused(false);
+  }, []);
+
+  const handleShowGameOver = useCallback(() => setDismissedGameOver(false), []);
+  const handleInspectBoard = useCallback(() => setDismissedGameOver(true), []);
+
+  const handleInspectCharacter = useCallback(() => {
+    const targetSq =
+      selectedSquare ??
+      pieces.find((p) => p.type === 'k' && p.color === status.turn)?.square ??
+      'e1';
+    sceneControllerRef.current?.focusCharacter(targetSq);
+  }, [selectedSquare, pieces, status.turn]);
+
+  const handleZoomIn = useCallback(() => sceneControllerRef.current?.adjustZoom(0.84), []);
+  const handleZoomOut = useCallback(() => sceneControllerRef.current?.adjustZoom(1.18), []);
+
+  const isClockRunning =
+    screen === 'playing' &&
+    settings.timeControlSeconds > 0 &&
+    !status.isGameOver &&
+    status.moveCount > 0 &&
+    !pendingAnimation &&
+    !settingsOpen &&
+    !isPaused;
 
   return (
     <main
@@ -832,20 +1183,19 @@ export default function App() {
       {screen === 'home' && (
         <HomeScreen
           quality={settings.quality}
-          onStartGame={() => setScreen('modes')}
-          onOpenModes={() => setScreen('modes')}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onOpenHowToPlay={() => setHowToPlayOpen(true)}
+          profile={profile}
+          onOpenProfile={handleOpenProfile}
+          onStartGame={handleGoModes}
+          onOpenModes={handleGoModes}
+          onOpenSettings={handleOpenSettings}
+          onOpenHowToPlay={handleOpenHowToPlay}
         />
       )}
 
       {screen === 'modes' && (
         <ModeSelectScreen
-          onSelectMode={(mode) => {
-            setSettings((s) => ({ ...s, mode }));
-            setScreen('kingdoms');
-          }}
-          onBack={() => setScreen('home')}
+          onSelectMode={handleSelectMode}
+          onBack={handleGoHome}
         />
       )}
 
@@ -853,11 +1203,9 @@ export default function App() {
         <KingdomSelectScreen
           selectedSet={settings.characterSet}
           quality={settings.quality}
-          onSelectSet={(characterSet) => setSettings((s) => ({ ...s, characterSet }))}
-          onContinue={() =>
-            setScreen(settings.mode === 'ai' ? 'ai-setup' : 'match-setup')
-          }
-          onBack={() => setScreen('modes')}
+          onSelectSet={handleSelectSet}
+          onContinue={handleKingdomContinue}
+          onBack={handleGoModes}
         />
       )}
 
@@ -908,36 +1256,35 @@ export default function App() {
             status={status}
             settings={settings}
             captured={captured}
-            whiteTime={whiteTime}
-            blackTime={blackTime}
+            clockResetKey={matchClockKey}
+            isClockRunning={isClockRunning}
+            onTimeout={handleTimeout}
             isAIThinking={isAIThinking}
             aiMessage={aiMessage}
             combatLabel={combatLabel}
             canUndo={canUndo}
-            onPause={() => setIsPaused(true)}
+            isInspectingGameOver={status.isGameOver && dismissedGameOver && !pendingAnimation}
+            onShowGameOver={handleShowGameOver}
+            onPause={handlePauseGame}
             onRestart={handleRestart}
             onUndo={handleUndo}
             onResign={handleResign}
             onResetCamera={handleResetCamera}
-            onInspectCharacter={() => {
-              const targetSq =
-                selectedSquare ??
-                pieces.find((p) => p.type === 'k' && p.color === status.turn)?.square ??
-                'e1';
-              sceneControllerRef.current?.focusCharacter(targetSq);
-            }}
-            onZoomIn={() => sceneControllerRef.current?.adjustZoom(0.84)}
-            onZoomOut={() => sceneControllerRef.current?.adjustZoom(1.18)}
-            onOpenSettings={() => setSettingsOpen(true)}
+            onInspectCharacter={handleInspectCharacter}
+            onZoomIn={handleZoomIn}
+            onZoomOut={handleZoomOut}
+            onOpenSettings={handleOpenSettings}
           />
 
           {pendingPromotion && (
             <PromotionModal
               color={pendingPromotion.color}
+              targetSquare={pendingPromotion.to}
               onSelect={(piece) => {
                 executeMove(pendingPromotion.from, pendingPromotion.to, piece);
               }}
               onCancel={() => {
+                audioManager.playModalClose();
                 setPendingPromotion(null);
                 setSelectedSquare(null);
               }}
@@ -946,12 +1293,12 @@ export default function App() {
 
           {isPaused && !settingsOpen && (
             <PauseModal
-              onResume={() => setIsPaused(false)}
+              onResume={handleResumeGame}
               onRestart={() => {
                 setIsPaused(false);
                 handleRestart();
               }}
-              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenSettings={handleOpenSettings}
               onMainMenu={handleReturnToMenu}
             />
           )}
@@ -962,7 +1309,7 @@ export default function App() {
               settings={settings}
               onRematch={handleRestart}
               onMainMenu={handleReturnToMenu}
-              onInspectBoard={() => setDismissedGameOver(true)}
+              onInspectBoard={handleInspectBoard}
             />
           )}
         </>
@@ -976,16 +1323,22 @@ export default function App() {
             setSettings(next);
             startFreshMatch(next);
           }}
-          onUpdateLiveSettings={(next) => {
-            setSettings(next);
-          }}
-          onClose={() => setSettingsOpen(false)}
+          onUpdateLiveSettings={setSettings}
+          onClose={handleCloseSettings}
         />
       )}
 
-      {howToPlayOpen && <HowToPlayModal onClose={() => setHowToPlayOpen(false)} />}
+      {howToPlayOpen && <HowToPlayModal onClose={handleCloseHowToPlay} />}
 
-      <DevPerfOverlay />
+      {profileOpen && (
+        <ProfileModal
+          profile={profile}
+          onUpdateProfile={setProfile}
+          onClose={handleCloseProfile}
+        />
+      )}
+
+      {screen !== 'home' && <DevPerfOverlay />}
     </main>
   );
 }
