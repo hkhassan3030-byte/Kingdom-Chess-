@@ -2325,6 +2325,645 @@ function buildThemedCharacterRig(
     return { rigParts: h, torsoBaseY };
   }
 
+  if (characterSet === 'frostguard') {
+    // SET 6 — FROSTBORN CITADEL (Glacier Warlords, Frostmancers & Arctic Cavalry)
+    if (type === 'k') {
+      const h = buildSculptedWarriorBody(geo, mat, 'king', {
+        scale: 1.18,
+        hasCape: true,
+        capeMaterial: mat.cape,
+        torsoMaterial: mat.armorPrimary,
+        pauldronMaterial: mat.armorTrim,
+        bracerMaterial: mat.armorDarkSteel,
+        greaveMaterial: mat.armorPrimary,
+        hasHeavyTorso: true,
+        hasMailSkirt: true,
+        hasChestCrest: true,
+        broadShoulders: 1.18,
+        beard: true,
+        visibleHair: true,
+        silverHair: true,
+        hairSeed: phaseOffset,
+      });
+      const furMantle = new THREE.Mesh(geo.furMantle, mat.furTrim);
+      furMantle.position.set(0, 0.43, -0.02);
+      furMantle.scale.set(1.08, 1.0, 1.08);
+      h.torso.add(furMantle);
+
+      const crown = new THREE.Mesh(geo.kingCrownHelm, mat.armorTrim);
+      crown.scale.setScalar(1.04);
+      crown.position.set(0, 0.12, -0.004);
+      h.head.add(crown);
+
+      const blade = createFlameSword(geo, mat, 1.16);
+      blade.position.set(0, -0.42, 0.04);
+      blade.rotation.x = Math.PI * 0.4;
+      h.rightArm.add(blade);
+      h.rightArm.rotation.set(-0.34, 0, -0.14);
+
+      const shield = buildHeraldicShield(geo, mat, 'heater');
+      shield.scale.setScalar(0.98);
+      shield.position.set(0.06, -0.25, 0.08);
+      shield.rotation.y = Math.PI * 0.42;
+      h.leftArm.add(shield);
+      h.leftArm.rotation.set(-0.24, 0, 0.12);
+      return { rigParts: h, torsoBaseY };
+    }
+
+    if (type === 'q') {
+      const h = buildSculptedWarriorBody(geo, mat, 'queen', {
+        scale: 1.12,
+        hasQueenGown: true,
+        hasFemaleCorset: true,
+        hasPauldrons: false,
+        hasCape: true,
+        capeMaterial: mat.cape,
+        torsoMaterial: mat.queenGown,
+        sleeveMaterial: mat.armorPrimary,
+        bracerMaterial: mat.armorTrim,
+        hasChestCrest: true,
+        broadShoulders: 0.88,
+        longHair: true,
+        sweptHair: true,
+        silverHair: true,
+        hairSeed: phaseOffset,
+      });
+      const furMantle = new THREE.Mesh(geo.furMantle, mat.furTrim);
+      furMantle.position.set(0, 0.4, -0.02);
+      furMantle.scale.set(0.86, 0.84, 0.86);
+      h.torso.add(furMantle);
+
+      const diadem = new THREE.Mesh(geo.queenDiadem, mat.armorTrim);
+      diadem.rotation.x = Math.PI / 2;
+      diadem.position.set(0, 0.23, 0);
+      h.head.add(diadem);
+
+      const staff = new THREE.Mesh(geo.staffShaft, mat.armorTrim);
+      staff.position.set(0, 0.04, 0.05);
+      h.rightArm.add(staff);
+
+      const glaive = new THREE.Mesh(geo.glaiveBlade, mat.weaponBlade);
+      glaive.position.set(0, 0.74, 0.05);
+      glaive.rotation.y = Math.PI * 0.5;
+      h.rightArm.add(glaive);
+
+      const crystal = new THREE.Mesh(geo.orbCrystal, mat.accentGlow);
+      crystal.scale.set(0.9, 1.35, 0.9);
+      crystal.position.set(0, 0.82, 0.05);
+      h.rightArm.add(crystal);
+      h.rightArm.rotation.set(-0.24, 0, -0.1);
+      h.leftArm.rotation.set(0.08, 0, 0.16);
+      return { rigParts: { ...h, crystal }, torsoBaseY };
+    }
+
+    if (type === 'b') {
+      const h = buildSculptedWarriorBody(geo, mat, 'mage', {
+        scale: 1.08,
+        hasCape: true,
+        capeMaterial: mat.cape,
+        torsoMaterial: mat.tabard,
+        sleeveMaterial: mat.cloth,
+        bracerMaterial: mat.armorPrimary,
+        thighMaterial: mat.trousers,
+        greaveMaterial: mat.armorDarkSteel,
+        hasMailSkirt: true,
+        hasChestCrest: true,
+        broadShoulders: 1.0,
+        beard: true,
+        visibleHair: true,
+        silverHair: true,
+        hairSeed: phaseOffset,
+      });
+      const cowl = new THREE.Mesh(geo.mageHood, mat.furTrim);
+      cowl.position.set(0, 0.125, -0.01);
+      h.head.add(cowl);
+
+      const staff = new THREE.Mesh(geo.staffShaft, mat.armorDarkSteel);
+      staff.scale.set(1.04, 1.12, 1.04);
+      staff.position.set(0, 0.08, 0.06);
+      h.rightArm.add(staff);
+
+      const ring = new THREE.Mesh(geo.staffCollarRing, mat.armorTrim);
+      ring.position.set(0, 0.82, 0.06);
+      h.rightArm.add(ring);
+
+      const crystal = new THREE.Mesh(geo.orbCrystal, mat.accentGlow);
+      crystal.scale.set(0.95, 1.2, 0.95);
+      crystal.position.set(0, 0.85, 0.06);
+      h.rightArm.add(crystal);
+      h.rightArm.rotation.set(-0.2, 0, -0.1);
+      h.leftArm.rotation.set(-0.26, 0, 0.14);
+      return { rigParts: { ...h, crystal }, torsoBaseY };
+    }
+
+    if (type === 'n') {
+      const mounted = buildMountedRiderKnight(geo, mat, phaseOffset, {
+        armorMat: mat.armorPrimary,
+        trimMat: mat.armorTrim,
+        capeMat: mat.cape,
+        hasBarding: true,
+        hasHornedHelm: true,
+        hasLanceGlow: true,
+      });
+      return { rigParts: mounted, torsoBaseY: mounted.torsoBaseY };
+    }
+
+    if (type === 'r') {
+      const h = buildSculptedWarriorBody(geo, mat, 'warrior', {
+        scale: 1.13,
+        hasHeavyTorso: true,
+        torsoMaterial: mat.armorDarkSteel,
+        pauldronMaterial: mat.armorPrimary,
+        bracerMaterial: mat.armorPrimary,
+        greaveMaterial: mat.armorDarkSteel,
+        hasMailSkirt: true,
+        hasChestCrest: true,
+        broadShoulders: 1.25,
+        beard: true,
+        visibleHair: true,
+        silverHair: true,
+        hairSeed: phaseOffset,
+      });
+      const helm = new THREE.Mesh(geo.rookHelm, mat.armorPrimary);
+      helm.position.set(0, 0.118, -0.004);
+      h.head.add(helm);
+
+      const shield = buildHeraldicShield(geo, mat, 'tower');
+      shield.scale.setScalar(1.08);
+      shield.position.set(0.08, -0.22, 0.12);
+      shield.rotation.y = Math.PI * 0.36;
+      h.leftArm.add(shield);
+      h.leftArm.rotation.set(-0.34, 0, 0.1);
+
+      const hammer = createWarhammer(geo, mat, 1.08);
+      hammer.position.set(0, -0.25, 0.08);
+      hammer.rotation.x = Math.PI * 0.38;
+      h.rightArm.add(hammer);
+      h.rightArm.rotation.set(-0.28, 0, -0.14);
+      return { rigParts: h, torsoBaseY };
+    }
+
+    // Frostguard Pawn: Fur-Trimmed Glacier Footman
+    const h = buildSculptedWarriorBody(geo, mat, 'young', {
+      scale: 0.99,
+      hasMailSkirt: true,
+      torsoMaterial: mat.pawnCoat,
+      sleeveMaterial: mat.cloth,
+      bracerMaterial: mat.armorPrimary,
+      thighMaterial: mat.trousers,
+      greaveMaterial: mat.armorDarkSteel,
+      broadShoulders: 0.96,
+      visibleHair: true,
+      silverHair: true,
+      hairSeed: phaseOffset,
+    });
+    const furCollar = new THREE.Mesh(geo.furMantle, mat.furTrim);
+    furCollar.position.set(0, 0.39, -0.01);
+    furCollar.scale.set(0.82, 0.78, 0.82);
+    h.torso.add(furCollar);
+
+    const helm = new THREE.Mesh(geo.pawnHelm, mat.armorPrimary);
+    helm.position.set(0, 0.118, -0.004);
+    h.head.add(helm);
+
+    const axeHaft = new THREE.Mesh(geo.staffShaft, mat.wood);
+    axeHaft.scale.set(0.9, 0.56, 0.9);
+    axeHaft.position.set(0, -0.28, 0.05);
+    axeHaft.rotation.x = Math.PI * 0.38;
+    h.rightArm.add(axeHaft);
+
+    const axe = new THREE.Mesh(geo.axeHead, mat.weaponBlade);
+    axe.scale.setScalar(0.8);
+    axe.position.set(0, -0.26, 0.36);
+    axe.rotation.y = Math.PI / 2;
+    h.rightArm.add(axe);
+    h.rightArm.rotation.set(-0.24, 0, -0.12);
+
+    const buckler = buildHeraldicShield(geo, mat, 'round');
+    buckler.scale.setScalar(0.8);
+    buckler.position.set(0.055, -0.24, 0.075);
+    buckler.rotation.y = Math.PI * 0.42;
+    h.leftArm.add(buckler);
+    h.leftArm.rotation.set(-0.28, 0, 0.1);
+    return { rigParts: h, torsoBaseY };
+  }
+
+  if (characterSet === 'sylvan') {
+    // SET 7 — SYLVAN ELDERWOOD (Grove Wardens, Dual-Blade Huntress & Druidic Casters)
+    if (type === 'k') {
+      const h = buildSculptedWarriorBody(geo, mat, 'king', {
+        scale: 1.16,
+        hasCape: true,
+        capeMaterial: mat.cape,
+        torsoMaterial: mat.royalTabard,
+        pauldronMaterial: mat.armorTrim,
+        bracerMaterial: mat.armorPrimary,
+        greaveMaterial: mat.armorDarkSteel,
+        hasMailSkirt: true,
+        hasChestCrest: true,
+        broadShoulders: 1.1,
+        beard: true,
+        visibleHair: true,
+        auburnHair: color === 'b',
+        silverHair: color === 'w',
+        hairSeed: phaseOffset,
+      });
+      const crown = new THREE.Mesh(geo.crownRoyal, mat.armorTrim);
+      crown.scale.setScalar(1.02);
+      crown.position.set(0, 0.215, -0.004);
+      h.head.add(crown);
+
+      for (const side of [-1, 1]) {
+        const antlerCrest = new THREE.Mesh(geo.hornedCrest, mat.armorTrim);
+        antlerCrest.scale.set(side * 0.68, 0.85, 0.72);
+        antlerCrest.position.set(side * 0.09, 0.22, 0.01);
+        h.head.add(antlerCrest);
+      }
+
+      const sword = createSword(geo, mat, 1.14);
+      sword.position.set(0, -0.42, 0.04);
+      sword.rotation.x = Math.PI * 0.4;
+      h.rightArm.add(sword);
+      h.rightArm.rotation.set(-0.32, 0, -0.14);
+
+      const shield = buildHeraldicShield(geo, mat, 'round');
+      shield.scale.setScalar(0.94);
+      shield.position.set(0.06, -0.25, 0.08);
+      shield.rotation.y = Math.PI * 0.42;
+      h.leftArm.add(shield);
+      h.leftArm.rotation.set(-0.22, 0, 0.12);
+      return { rigParts: h, torsoBaseY };
+    }
+
+    if (type === 'q') {
+      // Thornward Huntress: Agile Dual-Blade Ranger Queen
+      const h = buildSculptedWarriorBody(geo, mat, 'queen', {
+        scale: 1.1,
+        hasQueenGown: true,
+        hasFemaleCorset: true,
+        hasPauldrons: false,
+        hasCape: true,
+        capeMaterial: mat.cape,
+        torsoMaterial: mat.queenGown,
+        sleeveMaterial: mat.cloth,
+        bracerMaterial: mat.armorTrim,
+        hasBandolier: true,
+        hasChestCrest: true,
+        broadShoulders: 0.86,
+        longHair: true,
+        sweptHair: true,
+        auburnHair: true,
+        hairSeed: phaseOffset,
+      });
+      const diadem = new THREE.Mesh(geo.queenDiadem, mat.armorTrim);
+      diadem.rotation.x = Math.PI / 2;
+      diadem.position.set(0, 0.23, 0);
+      h.head.add(diadem);
+
+      const rBlade = createDualScoutSword(geo, mat, 1.0, true);
+      rBlade.position.set(0, -0.39, 0.04);
+      rBlade.rotation.x = Math.PI * 0.42;
+      h.rightArm.add(rBlade);
+      h.rightArm.rotation.set(-0.34, 0, -0.18);
+
+      const lBlade = createDualScoutSword(geo, mat, 0.96, true);
+      lBlade.position.set(0, -0.39, 0.04);
+      lBlade.rotation.x = Math.PI * 0.44;
+      h.leftArm.add(lBlade);
+      h.leftArm.rotation.set(-0.3, 0, 0.18);
+      return { rigParts: h, torsoBaseY };
+    }
+
+    if (type === 'b') {
+      const h = buildSculptedWarriorBody(geo, mat, 'mage', {
+        scale: 1.08,
+        hasCape: true,
+        capeMaterial: mat.cape,
+        torsoMaterial: mat.tabard,
+        sleeveMaterial: mat.cloth,
+        bracerMaterial: mat.leather,
+        thighMaterial: mat.trousers,
+        greaveMaterial: mat.leather,
+        hasMailSkirt: true,
+        broadShoulders: 0.98,
+        beard: true,
+        visibleHair: true,
+        silverHair: color === 'w',
+        hairSeed: phaseOffset,
+      });
+      const cowl = new THREE.Mesh(geo.pushedBackCowl, mat.cape);
+      cowl.position.set(0, 0.11, -0.03);
+      h.head.add(cowl);
+
+      const staff = new THREE.Mesh(geo.staffShaft, mat.wood);
+      staff.scale.set(1.06, 1.12, 1.06);
+      staff.position.set(0, 0.08, 0.06);
+      h.rightArm.add(staff);
+
+      const ring = new THREE.Mesh(geo.staffCollarRing, mat.armorTrim);
+      ring.position.set(0, 0.82, 0.06);
+      h.rightArm.add(ring);
+
+      const crystal = new THREE.Mesh(geo.orbCrystal, mat.accentGlow);
+      crystal.scale.set(0.95, 1.25, 0.95);
+      crystal.position.set(0, 0.85, 0.06);
+      h.rightArm.add(crystal);
+      h.rightArm.rotation.set(-0.2, 0, -0.1);
+      h.leftArm.rotation.set(-0.24, 0, 0.14);
+      return { rigParts: { ...h, crystal }, torsoBaseY };
+    }
+
+    if (type === 'n') {
+      const mounted = buildMountedRiderKnight(geo, mat, phaseOffset, {
+        armorMat: mat.armorPrimary,
+        trimMat: mat.armorTrim,
+        capeMat: mat.cape,
+        hasBarding: true,
+        hasPlume: true,
+        hasLanceGlow: true,
+      });
+      return { rigParts: mounted, torsoBaseY: mounted.torsoBaseY };
+    }
+
+    if (type === 'r') {
+      const h = buildSculptedWarriorBody(geo, mat, 'warrior', {
+        scale: 1.12,
+        hasHeavyTorso: true,
+        torsoMaterial: mat.armorPrimary,
+        pauldronMaterial: mat.armorTrim,
+        bracerMaterial: mat.armorPrimary,
+        greaveMaterial: mat.armorDarkSteel,
+        hasMailSkirt: true,
+        hasChestCrest: true,
+        broadShoulders: 1.22,
+        beard: true,
+        visibleHair: true,
+        hairSeed: phaseOffset,
+      });
+      const helm = new THREE.Mesh(geo.knightHelm, mat.armorPrimary);
+      helm.position.set(0, 0.12, -0.004);
+      h.head.add(helm);
+
+      const shield = buildHeraldicShield(geo, mat, 'tower');
+      shield.scale.setScalar(1.05);
+      shield.position.set(0.08, -0.22, 0.12);
+      shield.rotation.y = Math.PI * 0.36;
+      h.leftArm.add(shield);
+      h.leftArm.rotation.set(-0.34, 0, 0.1);
+
+      const haft = new THREE.Mesh(geo.staffShaft, mat.wood);
+      haft.scale.set(1.04, 0.86, 1.04);
+      haft.position.set(0, -0.22, 0.06);
+      haft.rotation.x = Math.PI * 0.36;
+      h.rightArm.add(haft);
+
+      const spear = new THREE.Mesh(geo.spearHalberdHead, mat.weaponBlade);
+      spear.position.set(0, -0.22, 0.56);
+      spear.rotation.x = Math.PI * 0.5;
+      h.rightArm.add(spear);
+      h.rightArm.rotation.set(-0.28, 0, -0.14);
+      return { rigParts: h, torsoBaseY };
+    }
+
+    // Sylvan Pawn: Forest Scout
+    const h = buildSculptedWarriorBody(geo, mat, 'young', {
+      scale: 0.97,
+      hasCoatSkirt: true,
+      hasShoulderMantle: true,
+      hasBandolier: true,
+      hasPauldrons: false,
+      torsoMaterial: mat.pawnCoat,
+      sleeveMaterial: mat.cloth,
+      bracerMaterial: mat.leather,
+      thighMaterial: mat.trousers,
+      greaveMaterial: mat.leather,
+      broadShoulders: 0.92,
+      visibleHair: true,
+      auburnHair: Math.sin(phaseOffset * 3.1) > 0,
+      hairSeed: phaseOffset,
+    });
+    const blade = createDualScoutSword(geo, mat, 0.88);
+    blade.position.set(0, -0.4, 0.04);
+    blade.rotation.x = Math.PI * 0.4;
+    h.rightArm.add(blade);
+    h.rightArm.rotation.set(-0.24, 0, -0.12);
+
+    const buckler = buildHeraldicShield(geo, mat, 'round');
+    buckler.scale.setScalar(0.76);
+    buckler.position.set(0.055, -0.24, 0.075);
+    buckler.rotation.y = Math.PI * 0.42;
+    h.leftArm.add(buckler);
+    h.leftArm.rotation.set(-0.28, 0, 0.1);
+    return { rigParts: h, torsoBaseY };
+  }
+
+  if (characterSet === 'storm') {
+    // SET 8 — TEMPEST VALKYRIE (Thunder Sovereigns, Dual-Blade Skybreaker & Storm Lancers)
+    if (type === 'k') {
+      const h = buildSculptedWarriorBody(geo, mat, 'king', {
+        scale: 1.17,
+        hasCape: true,
+        capeMaterial: mat.cape,
+        torsoMaterial: mat.armorPrimary,
+        pauldronMaterial: mat.armorTrim,
+        bracerMaterial: mat.armorPrimary,
+        greaveMaterial: mat.armorTrim,
+        hasMailSkirt: true,
+        hasChestCrest: true,
+        broadShoulders: 1.14,
+        beard: true,
+        visibleHair: true,
+        silverHair: color === 'w',
+        hairSeed: phaseOffset,
+      });
+      const crown = new THREE.Mesh(geo.crownRoyal, mat.armorTrim);
+      crown.scale.setScalar(1.06);
+      crown.position.set(0, 0.215, -0.004);
+      h.head.add(crown);
+
+      const halo = new THREE.Mesh(geo.celestialHalo, mat.accentGlow);
+      halo.scale.setScalar(0.95);
+      halo.position.set(0, 0.62, -0.14);
+      h.torso.add(halo);
+
+      const stormBlade = createFlameSword(geo, mat, 1.16);
+      stormBlade.position.set(0, -0.42, 0.04);
+      stormBlade.rotation.x = Math.PI * 0.4;
+      h.rightArm.add(stormBlade);
+      h.rightArm.rotation.set(-0.34, 0, -0.14);
+
+      const shield = buildHeraldicShield(geo, mat, 'heater');
+      shield.scale.setScalar(0.96);
+      shield.position.set(0.06, -0.25, 0.08);
+      shield.rotation.y = Math.PI * 0.42;
+      h.leftArm.add(shield);
+      h.leftArm.rotation.set(-0.22, 0, 0.12);
+      return { rigParts: h, torsoBaseY };
+    }
+
+    if (type === 'q') {
+      // Skybreaker Empress: Dual-Wield Valkyrie Blades + Storm Halo
+      const h = buildSculptedWarriorBody(geo, mat, 'queen', {
+        scale: 1.12,
+        hasQueenGown: true,
+        hasFemaleCorset: true,
+        hasPauldrons: true,
+        hasCape: true,
+        capeMaterial: mat.cape,
+        torsoMaterial: mat.queenGown,
+        pauldronMaterial: mat.armorTrim,
+        sleeveMaterial: mat.armorPrimary,
+        bracerMaterial: mat.armorTrim,
+        hasChestCrest: true,
+        broadShoulders: 0.9,
+        longHair: true,
+        sweptHair: true,
+        silverHair: color === 'w',
+        hairSeed: phaseOffset,
+      });
+      const halo = new THREE.Mesh(geo.celestialHalo, mat.accentGlow);
+      halo.scale.setScalar(0.84);
+      halo.position.set(0, 0.56, -0.13);
+      h.torso.add(halo);
+
+      const diadem = new THREE.Mesh(geo.queenDiadem, mat.armorTrim);
+      diadem.rotation.x = Math.PI / 2;
+      diadem.position.set(0, 0.23, 0);
+      h.head.add(diadem);
+
+      const rBlade = createDualScoutSword(geo, mat, 1.0, true);
+      rBlade.position.set(0, -0.39, 0.04);
+      rBlade.rotation.x = Math.PI * 0.42;
+      h.rightArm.add(rBlade);
+      h.rightArm.rotation.set(-0.34, 0, -0.18);
+
+      const lBlade = createDualScoutSword(geo, mat, 0.98, true);
+      lBlade.position.set(0, -0.39, 0.04);
+      lBlade.rotation.x = Math.PI * 0.44;
+      h.leftArm.add(lBlade);
+      h.leftArm.rotation.set(-0.3, 0, 0.18);
+      return { rigParts: h, torsoBaseY };
+    }
+
+    if (type === 'b') {
+      const h = buildSculptedWarriorBody(geo, mat, 'mage', {
+        scale: 1.09,
+        hasCape: true,
+        capeMaterial: mat.cape,
+        torsoMaterial: mat.tabard,
+        sleeveMaterial: mat.cloth,
+        bracerMaterial: mat.armorTrim,
+        thighMaterial: mat.trousers,
+        greaveMaterial: mat.armorPrimary,
+        hasMailSkirt: true,
+        hasChestCrest: true,
+        broadShoulders: 1.02,
+        visibleHair: true,
+        silverHair: color === 'w',
+        hairSeed: phaseOffset,
+      });
+      const mitre = new THREE.Mesh(geo.bishopMitre, mat.armorTrim);
+      mitre.scale.setScalar(0.92);
+      mitre.position.set(0, 0.225, -0.01);
+      h.head.add(mitre);
+
+      const staff = new THREE.Mesh(geo.staffShaft, mat.armorTrim);
+      staff.scale.set(1.05, 1.12, 1.05);
+      staff.position.set(0, 0.08, 0.06);
+      h.rightArm.add(staff);
+
+      const ring = new THREE.Mesh(geo.staffCollarRing, mat.armorTrim);
+      ring.position.set(0, 0.83, 0.06);
+      h.rightArm.add(ring);
+
+      const crystal = new THREE.Mesh(geo.orbCrystal, mat.accentGlow);
+      crystal.scale.set(0.95, 1.3, 0.95);
+      crystal.position.set(0, 0.85, 0.06);
+      h.rightArm.add(crystal);
+      h.rightArm.rotation.set(-0.18, 0, -0.1);
+      h.leftArm.rotation.set(-0.28, 0, 0.14);
+      return { rigParts: { ...h, crystal }, torsoBaseY };
+    }
+
+    if (type === 'n') {
+      const mounted = buildMountedRiderKnight(geo, mat, phaseOffset, {
+        armorMat: mat.armorPrimary,
+        trimMat: mat.armorTrim,
+        capeMat: mat.cape,
+        hasBarding: true,
+        hasPlume: true,
+        hasLanceGlow: true,
+      });
+      return { rigParts: mounted, torsoBaseY: mounted.torsoBaseY };
+    }
+
+    if (type === 'r') {
+      const h = buildSculptedWarriorBody(geo, mat, 'warrior', {
+        scale: 1.11,
+        hasHeavyTorso: true,
+        torsoMaterial: mat.armorPrimary,
+        pauldronMaterial: mat.armorTrim,
+        bracerMaterial: mat.armorPrimary,
+        greaveMaterial: mat.armorDarkSteel,
+        hasMailSkirt: true,
+        hasChestCrest: true,
+        broadShoulders: 1.24,
+        beard: true,
+        visibleHair: true,
+        silverHair: color === 'w',
+        hairSeed: phaseOffset,
+      });
+      const helm = new THREE.Mesh(geo.spartanHelm, mat.armorTrim);
+      helm.position.set(0, 0.118, -0.004);
+      h.head.add(helm);
+
+      const shield = buildHeraldicShield(geo, mat, 'tower');
+      shield.scale.setScalar(1.06);
+      shield.position.set(0.08, -0.22, 0.12);
+      shield.rotation.y = Math.PI * 0.36;
+      h.leftArm.add(shield);
+      h.leftArm.rotation.set(-0.34, 0, 0.1);
+
+      const hammer = createWarhammer(geo, mat, 1.06);
+      hammer.position.set(0, -0.25, 0.08);
+      hammer.rotation.x = Math.PI * 0.38;
+      h.rightArm.add(hammer);
+      h.rightArm.rotation.set(-0.28, 0, -0.14);
+      return { rigParts: h, torsoBaseY };
+    }
+
+    // Storm Pawn: Tempest Lancer
+    const h = buildSculptedWarriorBody(geo, mat, 'young', {
+      scale: 0.99,
+      hasMailSkirt: true,
+      torsoMaterial: mat.pawnCoat,
+      sleeveMaterial: mat.cloth,
+      bracerMaterial: mat.armorTrim,
+      thighMaterial: mat.trousers,
+      greaveMaterial: mat.armorPrimary,
+      broadShoulders: 0.96,
+      visibleHair: true,
+      hairSeed: phaseOffset,
+    });
+    const helm = new THREE.Mesh(geo.pawnHelm, mat.armorPrimary);
+    helm.position.set(0, 0.118, -0.004);
+    h.head.add(helm);
+
+    const blade = createDualScoutSword(geo, mat, 0.88, true);
+    blade.position.set(0, -0.4, 0.04);
+    blade.rotation.x = Math.PI * 0.4;
+    h.rightArm.add(blade);
+    h.rightArm.rotation.set(-0.22, 0, -0.12);
+
+    const shield = buildHeraldicShield(geo, mat, 'round');
+    shield.scale.setScalar(0.78);
+    shield.position.set(0.055, -0.24, 0.075);
+    shield.rotation.y = Math.PI * 0.42;
+    h.leftArm.add(shield);
+    h.leftArm.rotation.set(-0.28, 0, 0.1);
+    return { rigParts: h, torsoBaseY };
+  }
+
   // SET 5 — CELESTIAL KINGDOM
   if (type === 'k') {
     const h = buildSculptedWarriorBody(geo, mat, 'king', {

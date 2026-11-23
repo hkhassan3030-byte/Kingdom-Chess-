@@ -7,7 +7,7 @@ import {
   type CharacterRig,
 } from './createCharacterPieces';
 import { createSceneMaterialBank } from './materials';
-import { isSoftwareGlRenderer } from '../utils/webglDetect';
+import { isLowTierDevice, isSoftwareGlRenderer } from '../utils/webglDetect';
 import type { GameMode } from '../types/chess';
 
 interface ModePreviewCanvasProps {
@@ -48,7 +48,8 @@ export function ModePreviewCanvas({ mode, delayMs = 0 }: ModePreviewCanvasProps)
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.1;
-      renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 1.35));
+      const maxDpr = isSoftwareGl ? 1 : isLowTierDevice() ? 1.1 : 1.25;
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxDpr));
 
       const w = container.clientWidth || 280;
       const h = container.clientHeight || 140;

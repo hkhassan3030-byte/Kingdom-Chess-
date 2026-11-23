@@ -5,7 +5,10 @@ export type CombatStyleId =
   | 'dualBlade'
   | 'infernoHeavy'
   | 'shadowFast'
-  | 'celestialDivine';
+  | 'celestialDivine'
+  | 'frostCryo'
+  | 'sylvanGrove'
+  | 'stormValkyrie';
 
 export interface HeroPieceConfig {
   type: PieceType;
@@ -52,6 +55,9 @@ export const CHARACTER_SET_ORDER: CharacterSetId[] = [
   'inferno',
   'shadow',
   'celestial',
+  'frostguard',
+  'sylvan',
+  'storm',
 ];
 
 export const CHARACTER_SETS: Record<CharacterSetId, CharacterSetConfig> = {
@@ -384,6 +390,206 @@ export const CHARACTER_SETS: Record<CharacterSetId, CharacterSetConfig> = {
         roleTitle: 'Dawn Squire',
         archetype: 'Royal Celestial Soldier',
         weaponLabel: 'Silver Blade & Buckler',
+      },
+    },
+  },
+  frostguard: {
+    id: 'frostguard',
+    number: 6,
+    name: 'Frostborn Citadel',
+    tagline: 'Glacial Runes & Boreal Steel',
+    description:
+      'Northern frost sovereigns, cryo-sorceresses, glacier wardens, and winterhorn lancers forged in permafrost steel.',
+    accentHex: '#22d3ee',
+    badgeTextClass: 'text-cyan-300',
+    borderActiveClass: 'border-cyan-400/80',
+    cardBgClass: 'from-cyan-950/40 to-slate-900/90',
+    swatchColors: ['#d8f4ff', '#0284c7', '#1e3a5f'],
+    combat: {
+      style: 'frostCryo',
+      styleLabel: 'Cryo Rune Assault',
+      wTrailHex: 0xa5f3fc,
+      bTrailHex: 0x38bdf8,
+      wFlashHex: 0xecfeff,
+      bFlashHex: 0x7dd3fc,
+      wSparkHex: 0xcffafe,
+      bSparkHex: 0x38bdf8,
+      wMagicHex: 0x22d3ee,
+      bMagicHex: 0x3b82f6,
+      wShockHex: 0x06b6d4,
+      bShockHex: 0x2563eb,
+    },
+    pieces: {
+      k: {
+        type: 'k',
+        roleTitle: 'Frost Jarl King',
+        archetype: 'Glacial Crown Monarch',
+        weaponLabel: 'Permafrost Greatsword',
+      },
+      q: {
+        type: 'q',
+        roleTitle: 'Winter Empress',
+        archetype: 'Boreal Valkyrie Sovereign',
+        weaponLabel: 'Glacial Glaive',
+      },
+      b: {
+        type: 'b',
+        roleTitle: 'Rimecaller Magus',
+        archetype: 'Frost Rune Archmage',
+        weaponLabel: 'Cryo-Crystal Staff',
+      },
+      n: {
+        type: 'n',
+        roleTitle: 'Glacier Outrider',
+        archetype: 'Armored Snow Charger',
+        weaponLabel: 'Icicle War-Lance',
+        mounted: true,
+      },
+      r: {
+        type: 'r',
+        roleTitle: 'Iceberg Bastion',
+        archetype: 'Heavy Northern Juggernaut',
+        weaponLabel: 'Frosthammer & Tower Shield',
+      },
+      p: {
+        type: 'p',
+        roleTitle: 'Fjord Sentinel',
+        archetype: 'Fur-Clad Shield Guard',
+        weaponLabel: 'Rime Blade & Buckler',
+      },
+    },
+  },
+  sylvan: {
+    id: 'sylvan',
+    number: 7,
+    name: 'Sylvan Elderwood',
+    tagline: 'Ancient Grove & Emerald Oath',
+    description:
+      'Stag-crowned grove monarchs, thornblade queens, elderwood druids, and wild-steed rangers sworn to the emerald canopy.',
+    accentHex: '#84cc16',
+    badgeTextClass: 'text-lime-300',
+    borderActiveClass: 'border-lime-400/80',
+    cardBgClass: 'from-lime-950/35 to-slate-900/90',
+    swatchColors: ['#e7e5cc', '#4d7c0f', '#78502b'],
+    combat: {
+      style: 'sylvanGrove',
+      styleLabel: 'Grove Warden Strike',
+      wTrailHex: 0xd9f99d,
+      bTrailHex: 0x4ade80,
+      wFlashHex: 0xf7fee7,
+      bFlashHex: 0x86efac,
+      wSparkHex: 0xfef08a,
+      bSparkHex: 0x4ade80,
+      wMagicHex: 0xa3e635,
+      bMagicHex: 0x10b981,
+      wShockHex: 0x84cc16,
+      bShockHex: 0x059669,
+    },
+    pieces: {
+      k: {
+        type: 'k',
+        roleTitle: 'Elderwood King',
+        archetype: 'Antler-Crowned Grove Lord',
+        weaponLabel: 'Verdant Runeblade',
+      },
+      q: {
+        type: 'q',
+        roleTitle: 'Thornblade Queen',
+        archetype: 'Agile Woodland Monarch',
+        weaponLabel: 'Twin Briar Sabres',
+        dualWield: true,
+      },
+      b: {
+        type: 'b',
+        roleTitle: 'Grove Hierophant',
+        archetype: 'Living Amber Druid',
+        weaponLabel: 'Heartwood Orb Staff',
+      },
+      n: {
+        type: 'n',
+        roleTitle: 'Wildwood Ranger',
+        archetype: 'Mounted Forest Strider',
+        weaponLabel: 'Briar Lance',
+        mounted: true,
+      },
+      r: {
+        type: 'r',
+        roleTitle: 'Oakheart Warden',
+        archetype: 'Barkplate Citadel Colossus',
+        weaponLabel: 'Great-Axe & Oak Shield',
+      },
+      p: {
+        type: 'p',
+        roleTitle: 'Grove Pathfinder',
+        archetype: 'Cloaked Woodlander',
+        weaponLabel: 'Hunting Blade & Buckler',
+      },
+    },
+  },
+  storm: {
+    id: 'storm',
+    number: 8,
+    name: 'Tempest Valkyrie',
+    tagline: 'Sky-Steel & Lightning Fury',
+    description:
+      'Wing-crested tempest sovereigns, dual-blade storm valkyries, thunder mages, and sky-charger lancers wielding crackling electrum.',
+    accentHex: '#818cf8',
+    badgeTextClass: 'text-indigo-300',
+    borderActiveClass: 'border-indigo-400/80',
+    cardBgClass: 'from-indigo-950/40 to-slate-900/90',
+    swatchColors: ['#e0e7ff', '#6366f1', '#312e81'],
+    combat: {
+      style: 'stormValkyrie',
+      styleLabel: 'Tempest Lightning Surge',
+      wTrailHex: 0x93c5fd,
+      bTrailHex: 0xa78bfa,
+      wFlashHex: 0xeff6ff,
+      bFlashHex: 0xc4b5fd,
+      wSparkHex: 0x67e8f9,
+      bSparkHex: 0x818cf8,
+      wMagicHex: 0x60a5fa,
+      bMagicHex: 0x7c3aed,
+      wShockHex: 0x3b82f6,
+      bShockHex: 0x6d28d9,
+    },
+    pieces: {
+      k: {
+        type: 'k',
+        roleTitle: 'Storm Sovereign',
+        archetype: 'Wing-Helmed Sky Monarch',
+        weaponLabel: 'Thunderbrand Greatsword',
+      },
+      q: {
+        type: 'q',
+        roleTitle: 'Valkyrie Sovereign',
+        archetype: 'Tempest Twin-Blade Queen',
+        weaponLabel: 'Dual Lightning Sabres',
+        dualWield: true,
+      },
+      b: {
+        type: 'b',
+        roleTitle: 'Tempest Arcanist',
+        archetype: 'Storm-Conduit Prelate',
+        weaponLabel: 'Stormcore Staff',
+      },
+      n: {
+        type: 'n',
+        roleTitle: 'Sky-Charger Knight',
+        archetype: 'Mounted Tempest Lancer',
+        weaponLabel: 'Bolt War-Lance',
+        mounted: true,
+      },
+      r: {
+        type: 'r',
+        roleTitle: 'Thunder Bastion',
+        archetype: 'Heavy Stormplate Titan',
+        weaponLabel: 'Stormhammer & Electrum Shield',
+      },
+      p: {
+        type: 'p',
+        roleTitle: 'Gale Vindicator',
+        archetype: 'Wing-Crested Infantry',
+        weaponLabel: 'Spark Sabre & Buckler',
       },
     },
   },

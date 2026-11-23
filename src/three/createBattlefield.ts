@@ -4,6 +4,12 @@ import type { SceneMaterialBank } from './materials';
 
 export const TILE_SIZE = 1.15;
 export const BOARD_SPAN = TILE_SIZE * 8;
+export const GRAVEYARD_SURFACE_Y = -0.058;
+export const GRAVEYARD_BOUNDS = {
+  innerX: 5.82,
+  outerX: 9.3,
+  halfZ: 5.1,
+} as const;
 
 export interface BrazierFlameSpec {
   x: number;
@@ -111,7 +117,6 @@ export function createBattlefield(bank: SceneMaterialBank): BattlefieldRefs {
   for (const p of curbParts) p.dispose();
   const curbMesh = new THREE.Mesh(mergedCurbGeo, bank.boardFrame);
   curbMesh.receiveShadow = true;
-  curbMesh.castShadow = true;
   group.add(curbMesh);
 
   // 3. Merged Carved Dark Granite Paver Apron & Merged Gold Trim Frame
@@ -170,6 +175,79 @@ export function createBattlefield(bank: SceneMaterialBank): BattlefieldRefs {
   const cornerFinials = new THREE.Mesh(mergedCornerGeo, bank.boardGoldTrim);
   cornerFinials.receiveShadow = true;
   group.add(cornerFinials);
+
+  // 3b. Dedicated Flanking Fallen Sanctuary Terraces (West -X: White Fallen, East +X: Black Fallen)
+  const gyWidth = GRAVEYARD_BOUNDS.outerX - GRAVEYARD_BOUNDS.innerX; // 3.48
+  const gyLength = GRAVEYARD_BOUNDS.halfZ * 2; // 10.2
+  const gyCenterX = (GRAVEYARD_BOUNDS.innerX + GRAVEYARD_BOUNDS.outerX) * 0.5; // 7.56
+  const gySlabThick = 0.28;
+
+  const gySlabParts: THREE.BufferGeometry[] = [];
+  const gyRimParts: THREE.BufferGeometry[] = [];
+  const gyTrimParts: THREE.BufferGeometry[] = [];
+
+  for (const sideSign of [-1, 1]) {
+    const cx = sideSign * gyCenterX;
+    // Main recessed stone graveyard deck (top flush at GRAVEYARD_SURFACE_Y = -0.058)
+    const deckGeo = new THREE.BoxGeometry(gyWidth, gySlabThick, gyLength);
+    deckGeo.translate(cx, GRAVEYARD_SURFACE_Y - gySlabThick * 0.5, 0);
+    gySlabParts.push(deckGeo);
+
+    // Lower bastion foundation pier reaching arena courtyard floor (-0.45)
+    const baseGeo = new THREE.BoxGeometry(gyWidth - 0.24, 0.2, gyLength - 0.24);
+    baseGeo.translate(cx, -0.36, 0);
+    gyRimParts.push(baseGeo);
+
+    // Outer perimeter low stone border curbs so bodies are cleanly framed
+    const outerBar = new THREE.BoxGeometry(0.14, 0.045, gyLength + 0.14);
+    outerBar.translate(sideSign * (GRAVEYARD_BOUNDS.outerX + 0.05), GRAVEYARD_SURFACE_Y + 0.012, 0);
+    gyRimParts.push(outerBar);
+
+    for (const sz of [-1, 1]) {
+      const endBar = new THREE.BoxGeometry(gyWidth + 0.16, 0.045, 0.14);
+      endBar.translate(cx, GRAVEYARD_SURFACE_Y + 0.012, sz * (GRAVEYARD_BOUNDS.halfZ + 0.05));
+      gyRimParts.push(endBar);
+
+      const stud = new THREE.BoxGeometry(0.16, 0.055, 0.16);
+      stud.translate(
+        sideSign * (GRAVEYARD_BOUNDS.outerX + 0.05),
+        GRAVEYARD_SURFACE_Y + 0.018,
+        sz * (GRAVEYARD_BOUNDS.halfZ + 0.05)
+      );
+      gyTrimParts.push(stud);
+    }
+  }
+
+  const mergedGySlabGeo = trackGeo(mergeGeometries(gySlabParts, false)!);
+  for (const g of gySlabParts) g.dispose();
+  const gySlabMesh = new THREE.Mesh(mergedGySlabGeo, bank.stoneApron);
+  gySlabMesh.receiveShadow = true;
+  group.add(gySlabMesh);
+
+  const mergedGyRimGeo = trackGeo(mergeGeometries(gyRimParts, false)!);
+  for (const g of gyRimParts) g.dispose();
+  const gyRimMesh = new THREE.Mesh(mergedGyRimGeo, bank.boardFrame);
+  gyRimMesh.receiveShadow = true;
+  group.add(gyRimMesh);
+
+  const mergedGyTrimGeo = trackGeo(mergeGeometries(gyTrimParts, false)!);
+  for (const g of gyTrimParts) g.dispose();
+  const gyTrimMesh = new THREE.Mesh(mergedGyTrimGeo, bank.boardGoldTrim);
+  gyTrimMesh.receiveShadow = true;
+  group.add(gyTrimMesh);
+
+  // Subtle carved allegiance edge strips along inner graveyard border (White on -X, Black on +X)
+  const whiteInlayGeo = trackGeo(new THREE.BoxGeometry(0.08, 0.014, gyLength - 0.5));
+  const whiteInlayMesh = new THREE.Mesh(whiteInlayGeo, bank.lightTile);
+  whiteInlayMesh.position.set(-GRAVEYARD_BOUNDS.innerX - 0.06, GRAVEYARD_SURFACE_Y + 0.002, 0);
+  whiteInlayMesh.receiveShadow = true;
+  group.add(whiteInlayMesh);
+
+  const blackInlayGeo = trackGeo(new THREE.BoxGeometry(0.08, 0.014, gyLength - 0.5));
+  const blackInlayMesh = new THREE.Mesh(blackInlayGeo, bank.darkTile);
+  blackInlayMesh.position.set(GRAVEYARD_BOUNDS.innerX + 0.06, GRAVEYARD_SURFACE_Y + 0.002, 0);
+  blackInlayMesh.receiveShadow = true;
+  group.add(blackInlayMesh);
 
   // 4. 64 Tiles rendered via 2 InstancedMeshes (2 draw calls total!) + Invisible Layer 1 Hit Planes
   const tileGeo = trackGeo(new THREE.BoxGeometry(TILE_SIZE - 0.014, 0.1, TILE_SIZE - 0.014));
@@ -289,15 +367,12 @@ export function createBattlefield(bank: SceneMaterialBank): BattlefieldRefs {
 
   const count = brazierSpecs.length;
   const plinthInst = new THREE.InstancedMesh(plinthGeo, bank.ruinStone, count);
-  plinthInst.castShadow = true;
   plinthInst.receiveShadow = true;
 
   const shaftInst = new THREE.InstancedMesh(shaftGeo, bank.ruinStone, count);
-  shaftInst.castShadow = true;
   shaftInst.receiveShadow = true;
 
   const bowlInst = new THREE.InstancedMesh(bowlGeo, bank.brazierIron, count);
-  bowlInst.castShadow = true;
   bowlInst.receiveShadow = true;
 
   const rimInst = new THREE.InstancedMesh(rimGeo, bank.brazierIron, count);
@@ -387,11 +462,9 @@ export function createBattlefield(bank: SceneMaterialBank): BattlefieldRefs {
   const capGeo = trackGeo(new THREE.BoxGeometry(1.38, 0.34, 1.38));
 
   const colInst = new THREE.InstancedMesh(colGeo, bank.ruinStone, pillarSpecs.length);
-  colInst.castShadow = true;
   colInst.receiveShadow = true;
 
   const capInst = new THREE.InstancedMesh(capGeo, bank.ruinStone, pillarSpecs.length);
-  capInst.castShadow = true;
   capInst.receiveShadow = true;
 
   pillarSpecs.forEach(([px, pz, h, rad, tilt], idx) => {

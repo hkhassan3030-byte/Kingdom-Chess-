@@ -3,10 +3,12 @@ import { ChessSceneController } from '../three/ChessSceneController';
 import type { CombatSoundEvent } from '../three/combatChoreography';
 import type {
   BoardPiece,
+  BoardThemeId,
   CharacterSetId,
   GraphicsQuality,
   MoveAnimationPayload,
   PieceColor,
+  PieceSkinId,
 } from '../types/chess';
 
 interface ChessViewportProps {
@@ -19,6 +21,8 @@ interface ChessViewportProps {
   showCoordinates: boolean;
   quality: GraphicsQuality;
   characterSet: CharacterSetId;
+  pieceSkin?: PieceSkinId;
+  boardTheme?: BoardThemeId;
   initialSide: PieceColor;
   onSquareTap: (square: string) => void;
   onAnimationComplete: () => void;
@@ -36,6 +40,8 @@ export const ChessViewport = memo(function ChessViewport({
   showCoordinates,
   quality,
   characterSet,
+  pieceSkin = 'royal-standard',
+  boardTheme = 'classic-citadel',
   initialSide,
   onSquareTap,
   onAnimationComplete,
@@ -68,6 +74,8 @@ export const ChessViewport = memo(function ChessViewport({
     const ctrl = new ChessSceneController(container, {
       initialSide,
       characterSet,
+      pieceSkin,
+      boardTheme,
       onSquareTap: (sq) => onSquareTapRef.current(sq),
       onCombatSound: (cue) => onCombatSoundRef.current(cue),
       onContextLost: () => setContextLost(true),
@@ -122,6 +130,14 @@ export const ChessViewport = memo(function ChessViewport({
   useEffect(() => {
     controllerRef.current?.setCharacterSet(characterSet);
   }, [characterSet, controllerRef]);
+
+  useEffect(() => {
+    controllerRef.current?.setPieceSkin(pieceSkin);
+  }, [pieceSkin, controllerRef]);
+
+  useEffect(() => {
+    controllerRef.current?.setBoardTheme(boardTheme);
+  }, [boardTheme, controllerRef]);
 
   return (
     <div className="relative w-full h-full overflow-hidden bg-[#131a28]">

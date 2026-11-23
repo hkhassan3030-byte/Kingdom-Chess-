@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import type { CharacterSetId, PieceColor } from '../types/chess';
+import { BOARD_ARENAS, PIECE_SKINS } from './arenaPresets';
+import type { BoardThemeId, CharacterSetId, PieceColor, PieceSkinId } from '../types/chess';
 
 export interface KingdomMaterials {
   armorPrimary: THREE.MeshStandardMaterial;
@@ -45,6 +46,8 @@ export interface KingdomMaterials {
 
 export interface SceneMaterialBank {
   characterSet: CharacterSetId;
+  pieceSkin: PieceSkinId;
+  boardTheme: BoardThemeId;
   white: KingdomMaterials;
   black: KingdomMaterials;
   lightTile: THREE.MeshStandardMaterial;
@@ -64,6 +67,8 @@ export interface SceneMaterialBank {
   emberTexture: THREE.CanvasTexture;
   coordAtlasTex: THREE.CanvasTexture;
   switchCharacterSet: (nextSet: CharacterSetId) => void;
+  switchPieceSkin: (nextSkin: PieceSkinId) => void;
+  switchBoardTheme: (nextTheme: BoardThemeId) => void;
   dispose: () => void;
 }
 
@@ -2412,6 +2417,9 @@ export function createSceneMaterialBank(
     colorHex: number;
     emissiveHex: number;
     emissiveIntensity: number;
+    metalness: number;
+    roughness: number;
+    envMapIntensity: number;
   }>;
   const capturePaletteColors = (palette: KingdomMaterials): SavedMatColors => {
     const out: SavedMatColors = [];
@@ -2422,6 +2430,9 @@ export function createSceneMaterialBank(
         colorHex: m.color.getHex(),
         emissiveHex: m.emissive.getHex(),
         emissiveIntensity: m.emissiveIntensity,
+        metalness: m.metalness,
+        roughness: m.roughness,
+        envMapIntensity: m.envMapIntensity,
       });
     }
     return out;
@@ -2435,15 +2446,18 @@ export function createSceneMaterialBank(
       entry.mat.color.setHex(entry.colorHex);
       entry.mat.emissive.setHex(entry.emissiveHex);
       entry.mat.emissiveIntensity = entry.emissiveIntensity;
+      entry.mat.metalness = entry.metalness;
+      entry.mat.roughness = entry.roughness;
+      entry.mat.envMapIntensity = entry.envMapIntensity;
     }
   };
 
-  const applyCharacterSetToPalettes = (setId: CharacterSetId): { white: KingdomMaterials; black: KingdomMaterials } => {
+  const applyCharacterSetAndSkin = (
+    setId: CharacterSetId,
+    skinId: PieceSkinId
+  ): { white: KingdomMaterials; black: KingdomMaterials } => {
     restoreHumanDefaults(savedHumanWhite);
     restoreHumanDefaults(savedHumanBlack);
-    if (setId === 'human') {
-      return basePalettes;
-    }
 
     const tuneMat = (mat: THREE.MeshStandardMaterial, colorHex: number, emissiveHex?: number, emissiveIntensity = 1.3) => {
       mat.color.setHex(colorHex);
@@ -2640,16 +2654,273 @@ export function createSceneMaterialBank(
       tuneMat(black.horseMane, 0xd9a441, 0xb45309, 0.35);
       tuneMat(black.hair, 0x191f33);
       tuneMat(black.hairSilver, 0x8ea0c4);
+    } else if (setId === 'frostguard') {
+      // Frostborn Citadel: White = Glacier Silver Steel, Polar Fur & Cyan Frost; Black = Deep Arctic Fjord Iron & Ice-Teal
+      tuneMat(white.armorPrimary, 0xd5ecfa);
+      tuneMat(white.armorDarkSteel, 0x4c718f);
+      tuneMat(white.armorSecondary, 0xafd7ee);
+      tuneMat(white.armorTrim, 0xe2f4ff);
+      tuneMat(white.cloth, 0xe8f6ff);
+      tuneMat(white.tabard, 0x25638f);
+      tuneMat(white.royalTabard, 0x1b4b73);
+      tuneMat(white.pawnCoat, 0x316e96);
+      tuneMat(white.crimsonAccent, 0x06b6d4);
+      tuneMat(white.cape, 0x1f557d);
+      tuneMat(white.gown, 0xcbe8f8);
+      tuneMat(white.queenGown, 0x1c4f75);
+      tuneMat(white.crownVelvet, 0x0e7490);
+      tuneMat(white.furTrim, 0xf8fcff);
+      tuneMat(white.leather, 0x45586b);
+      tuneMat(white.trousers, 0xdfeef7);
+      tuneMat(white.weaponBlade, 0xe0f8ff, 0x0891b2, 0.32);
+      tuneMat(white.gem, 0x67e8f9, 0x06b6d4, 1.7);
+      tuneMat(white.accentGlow, 0xa5f3fc, 0x22d3ee, 1.85);
+      tuneMat(white.horseCoat, 0xe2eff7);
+      tuneMat(white.horseMane, 0xbce6fa, 0x0284c7, 0.28);
+      tuneMat(white.hair, 0x6d8aa3);
+      tuneMat(white.hairSilver, 0xf1f5f9);
+
+      tuneMat(black.armorPrimary, 0x1c3144);
+      tuneMat(black.armorDarkSteel, 0x101d2b);
+      tuneMat(black.armorSecondary, 0x2b465e);
+      tuneMat(black.armorTrim, 0x5fb8d9);
+      tuneMat(black.cloth, 0x17283b);
+      tuneMat(black.tabard, 0x14334a);
+      tuneMat(black.royalTabard, 0x0f3b52);
+      tuneMat(black.pawnCoat, 0x19364d);
+      tuneMat(black.crimsonAccent, 0x0891b2);
+      tuneMat(black.cape, 0x132b42);
+      tuneMat(black.gown, 0x162d42);
+      tuneMat(black.queenGown, 0x12384f);
+      tuneMat(black.crownVelvet, 0x155e75);
+      tuneMat(black.furTrim, 0x355066);
+      tuneMat(black.leather, 0x1c2530);
+      tuneMat(black.trousers, 0x182533);
+      tuneMat(black.weaponBlade, 0x8cc2db, 0x0e7490, 0.36);
+      tuneMat(black.gem, 0x22d3ee, 0x0891b2, 1.7);
+      tuneMat(black.accentGlow, 0x67e8f9, 0x06b6d4, 1.9);
+      tuneMat(black.horseCoat, 0x152230);
+      tuneMat(black.horseMane, 0x38bdf8, 0x0369a1, 0.4);
+      tuneMat(black.hair, 0x182433);
+      tuneMat(black.hairSilver, 0x7e9eb8);
+    } else if (setId === 'sylvan') {
+      // Sylvan Elderwood: White = Burnished Sage-Bronze & Emerald Cloth; Black = Ironbark Plate & Deep Forest Gold
+      tuneMat(white.armorPrimary, 0xcfd6bd);
+      tuneMat(white.armorDarkSteel, 0x45523b);
+      tuneMat(white.armorSecondary, 0xa8b891);
+      tuneMat(white.armorTrim, 0xdbb55c);
+      tuneMat(white.cloth, 0xe8ead6);
+      tuneMat(white.tabard, 0x3b6e47);
+      tuneMat(white.royalTabard, 0x285937);
+      tuneMat(white.pawnCoat, 0x45784d);
+      tuneMat(white.crimsonAccent, 0x65a30d);
+      tuneMat(white.cape, 0x2d5e3a);
+      tuneMat(white.gown, 0xdde3c8);
+      tuneMat(white.queenGown, 0x2b5c3b);
+      tuneMat(white.crownVelvet, 0x1e4d2b);
+      tuneMat(white.furTrim, 0xd2d6c3);
+      tuneMat(white.leather, 0x6b4b2b);
+      tuneMat(white.trousers, 0xe6e2cf);
+      tuneMat(white.weaponBlade, 0xf2f0d8, 0x84cc16, 0.2);
+      tuneMat(white.gem, 0xa3e635, 0x65a30d, 1.55);
+      tuneMat(white.accentGlow, 0xd9f99d, 0x84cc16, 1.75);
+      tuneMat(white.horseCoat, 0xdfd8c3);
+      tuneMat(white.horseMane, 0x738a4e);
+      tuneMat(white.hair, 0x5c3e24);
+      tuneMat(white.hairAuburn, 0x9c4b22);
+      tuneMat(white.hairSilver, 0xdbe3cc);
+
+      tuneMat(black.armorPrimary, 0x2a3324);
+      tuneMat(black.armorDarkSteel, 0x181f14);
+      tuneMat(black.armorSecondary, 0x3e4a34);
+      tuneMat(black.armorTrim, 0xc29842);
+      tuneMat(black.cloth, 0x20291b);
+      tuneMat(black.tabard, 0x1d3b26);
+      tuneMat(black.royalTabard, 0x173321);
+      tuneMat(black.pawnCoat, 0x24422a);
+      tuneMat(black.crimsonAccent, 0x84cc16);
+      tuneMat(black.cape, 0x17301e);
+      tuneMat(black.gown, 0x1d3623);
+      tuneMat(black.queenGown, 0x193823);
+      tuneMat(black.crownVelvet, 0x14331d);
+      tuneMat(black.furTrim, 0x2b3626);
+      tuneMat(black.leather, 0x362516);
+      tuneMat(black.trousers, 0x1f291c);
+      tuneMat(black.weaponBlade, 0x93a885, 0x65a30d, 0.28);
+      tuneMat(black.gem, 0x34d399, 0x10b981, 1.65);
+      tuneMat(black.accentGlow, 0x6ee7b7, 0x059669, 1.85);
+      tuneMat(black.horseCoat, 0x1d2419);
+      tuneMat(black.horseMane, 0x4d7c0f, 0x3f6212, 0.35);
+      tuneMat(black.hair, 0x1e1812);
+      tuneMat(black.hairAuburn, 0x5c2b16);
+      tuneMat(black.hairSilver, 0x6c7d65);
+    } else if (setId === 'storm') {
+      // Tempest Valkyrie: White = Electrum Silver, Storm Azure & Lightning Gold; Black = Thunderhead Slate & Violet Arc
+      tuneMat(white.armorPrimary, 0xd6dff2);
+      tuneMat(white.armorDarkSteel, 0x4a557a);
+      tuneMat(white.armorSecondary, 0xb0bede);
+      tuneMat(white.armorTrim, 0xfacc15);
+      tuneMat(white.cloth, 0xeaf0fc);
+      tuneMat(white.tabard, 0x374985);
+      tuneMat(white.royalTabard, 0x2b3970);
+      tuneMat(white.pawnCoat, 0x415696);
+      tuneMat(white.crimsonAccent, 0x6366f1);
+      tuneMat(white.cape, 0x304282);
+      tuneMat(white.gown, 0xdde6fa);
+      tuneMat(white.queenGown, 0x2c3c7a);
+      tuneMat(white.crownVelvet, 0x312e81);
+      tuneMat(white.furTrim, 0xe8eefc);
+      tuneMat(white.weaponBlade, 0xf2f6ff, 0xfacc15, 0.32);
+      tuneMat(white.gem, 0xfde047, 0xeab308, 1.75);
+      tuneMat(white.accentGlow, 0xfef08a, 0xf59e0b, 1.95);
+      tuneMat(white.horseCoat, 0xe3eaf7);
+      tuneMat(white.horseMane, 0xfde047, 0xca8a04, 0.4);
+      tuneMat(white.hair, 0x9c8248);
+      tuneMat(white.hairSilver, 0xf1f5f9);
+
+      tuneMat(black.armorPrimary, 0x222640);
+      tuneMat(black.armorDarkSteel, 0x131629);
+      tuneMat(black.armorSecondary, 0x33395e);
+      tuneMat(black.armorTrim, 0x9caef2);
+      tuneMat(black.cloth, 0x1b1e36);
+      tuneMat(black.tabard, 0x2e2359);
+      tuneMat(black.royalTabard, 0x3b266e);
+      tuneMat(black.pawnCoat, 0x28214f);
+      tuneMat(black.crimsonAccent, 0x818cf8);
+      tuneMat(black.cape, 0x261d4d);
+      tuneMat(black.gown, 0x221b45);
+      tuneMat(black.queenGown, 0x31205e);
+      tuneMat(black.crownVelvet, 0x4338ca);
+      tuneMat(black.furTrim, 0x2f3454);
+      tuneMat(black.weaponBlade, 0x9faef0, 0x6366f1, 0.42);
+      tuneMat(black.gem, 0x818cf8, 0x6366f1, 1.8);
+      tuneMat(black.accentGlow, 0xa5b4fc, 0x818cf8, 1.95);
+      tuneMat(black.horseCoat, 0x171a2e);
+      tuneMat(black.horseMane, 0x818cf8, 0x4f46e5, 0.45);
+      tuneMat(black.hair, 0x1a1c2e);
+      tuneMat(black.hairSilver, 0x9ca6cf);
+    }
+
+    // Apply optional Piece Skin finish layer while preserving anatomical skin tones, eyes, and White/Black contrast
+    const skin = PIECE_SKINS[skinId];
+    if (skin && skinId !== 'royal-standard') {
+      const applySkinOverlay = (
+        palette: KingdomMaterials,
+        armorTint: number | null,
+        trimTint: number | null,
+        bladeTint: number | null,
+        clothTint: number | null,
+        glowTint: number | null
+      ) => {
+        const armorGroup = [palette.armorPrimary, palette.armorSecondary, palette.armorDarkSteel, palette.chainmail];
+        for (const m of armorGroup) {
+          if (armorTint !== null) {
+            if (m === palette.armorDarkSteel) {
+              m.color.lerp(new THREE.Color(armorTint), 0.45);
+            } else if (m === palette.armorSecondary || m === palette.chainmail) {
+              m.color.lerp(new THREE.Color(armorTint), 0.72);
+            } else {
+              m.color.setHex(armorTint);
+            }
+          }
+          m.metalness = THREE.MathUtils.clamp(m.metalness + skin.metalnessDelta, 0.05, 0.96);
+          m.roughness = THREE.MathUtils.clamp(m.roughness + skin.roughnessDelta, 0.12, 0.85);
+          m.envMapIntensity = THREE.MathUtils.clamp(m.envMapIntensity + skin.envIntensityBoost, 0.6, 2.2);
+        }
+
+        if (trimTint !== null) {
+          palette.armorTrim.color.setHex(trimTint);
+        }
+        palette.armorTrim.metalness = THREE.MathUtils.clamp(
+          palette.armorTrim.metalness + skin.metalnessDelta * 0.6,
+          0.15,
+          0.98
+        );
+        palette.armorTrim.roughness = THREE.MathUtils.clamp(
+          palette.armorTrim.roughness + skin.roughnessDelta,
+          0.1,
+          0.75
+        );
+        palette.armorTrim.envMapIntensity = THREE.MathUtils.clamp(
+          palette.armorTrim.envMapIntensity + skin.envIntensityBoost,
+          0.8,
+          2.4
+        );
+
+        if (bladeTint !== null) {
+          palette.weaponBlade.color.setHex(bladeTint);
+        }
+        palette.weaponBlade.roughness = THREE.MathUtils.clamp(
+          palette.weaponBlade.roughness + skin.roughnessDelta * 0.8,
+          0.1,
+          0.65
+        );
+
+        if (clothTint !== null) {
+          const cloths = [
+            palette.cloth,
+            palette.tabard,
+            palette.royalTabard,
+            palette.pawnCoat,
+            palette.cape,
+            palette.gown,
+            palette.queenGown,
+          ];
+          for (const c of cloths) {
+            c.color.lerp(new THREE.Color(clothTint), 0.65);
+          }
+        }
+
+        if (glowTint !== null) {
+          palette.gem.color.setHex(glowTint);
+          palette.gem.emissive.setHex(glowTint);
+          palette.accentGlow.color.setHex(glowTint);
+          palette.accentGlow.emissive.setHex(glowTint);
+        }
+        if (skin.emissiveBoost !== 0) {
+          palette.gem.emissiveIntensity = THREE.MathUtils.clamp(
+            palette.gem.emissiveIntensity + skin.emissiveBoost,
+            0.5,
+            2.4
+          );
+          palette.accentGlow.emissiveIntensity = THREE.MathUtils.clamp(
+            palette.accentGlow.emissiveIntensity + skin.emissiveBoost,
+            0.6,
+            2.5
+          );
+        }
+      };
+
+      applySkinOverlay(
+        white,
+        skin.wArmorTint,
+        skin.wTrimTint,
+        skin.wBladeTint,
+        skin.wClothTint,
+        skin.wGlowTint
+      );
+      applySkinOverlay(
+        black,
+        skin.bArmorTint,
+        skin.bTrimTint,
+        skin.bBladeTint,
+        skin.bClothTint,
+        skin.bGlowTint
+      );
     }
 
     return basePalettes;
   };
 
   let activeCharacterSet: CharacterSetId = initialCharacterSet;
-  const activePalettes = applyCharacterSetToPalettes(activeCharacterSet);
+  let activePieceSkin: PieceSkinId = 'royal-standard';
+  let activeBoardTheme: BoardThemeId = 'classic-citadel';
+  const activePalettes = applyCharacterSetAndSkin(activeCharacterSet, activePieceSkin);
 
   const bank: SceneMaterialBank = {
     characterSet: activeCharacterSet,
+    pieceSkin: activePieceSkin,
+    boardTheme: activeBoardTheme,
     white: activePalettes.white,
     black: activePalettes.black,
     lightTile: track(
@@ -2766,8 +3037,31 @@ export function createSceneMaterialBank(
     switchCharacterSet: (nextSet: CharacterSetId) => {
       if (nextSet === activeCharacterSet) return;
       activeCharacterSet = nextSet;
-      applyCharacterSetToPalettes(nextSet);
+      applyCharacterSetAndSkin(nextSet, activePieceSkin);
       bank.characterSet = nextSet;
+    },
+    switchPieceSkin: (nextSkin: PieceSkinId) => {
+      if (nextSkin === activePieceSkin) return;
+      activePieceSkin = nextSkin;
+      applyCharacterSetAndSkin(activeCharacterSet, nextSkin);
+      bank.pieceSkin = nextSkin;
+    },
+    switchBoardTheme: (nextTheme: BoardThemeId) => {
+      activeBoardTheme = nextTheme;
+      bank.boardTheme = nextTheme;
+      const pal = BOARD_ARENAS[nextTheme] ?? BOARD_ARENAS['classic-citadel'];
+      bank.lightTile.color.setHex(pal.lightTile);
+      bank.lightTile.roughness = pal.lightRoughness;
+      bank.darkTile.color.setHex(pal.darkTile);
+      bank.darkTile.roughness = pal.darkRoughness;
+      bank.stoneApron.color.setHex(pal.stoneApron);
+      bank.boardFrame.color.setHex(pal.boardFrame);
+      bank.boardGoldTrim.color.setHex(pal.boardGoldTrim);
+      bank.waterMoat.color.setHex(pal.waterMoat);
+      bank.citadelGround.color.setHex(pal.citadelGround);
+      bank.ruinStone.color.setHex(pal.ruinStone);
+      bank.brazierFlame.color.setHex(pal.flame);
+      bank.brazierEmber.emissive.setHex(pal.ember);
     },
     dispose: () => {
       for (const item of setDisposables) {

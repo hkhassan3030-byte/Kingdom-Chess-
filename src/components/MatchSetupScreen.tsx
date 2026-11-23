@@ -1,15 +1,20 @@
 import { ArrowLeft, Clock, Shield, Star, Swords } from 'lucide-react';
 import { audioManager } from '../audio/AudioManager';
+import { BOARD_ARENAS, PIECE_SKINS } from '../three/arenaPresets';
 import { CHARACTER_SETS } from '../three/characterSets';
 import {
   AI_PROFILES,
   TIME_CONTROLS,
+  type BoardThemeId,
   type GameSettings,
+  type PieceSkinId,
   type TimerOption,
 } from '../types/chess';
 
 interface MatchSetupScreenProps {
   settings: GameSettings;
+  pieceSkin?: PieceSkinId;
+  boardTheme?: BoardThemeId;
   onChangeTimeControl: (seconds: TimerOption) => void;
   onChangeAutoFlip: (autoFlip: boolean) => void;
   onChangeKingdom?: () => void;
@@ -19,6 +24,8 @@ interface MatchSetupScreenProps {
 
 export function MatchSetupScreen({
   settings,
+  pieceSkin = 'royal-standard',
+  boardTheme = 'classic-citadel',
   onChangeTimeControl,
   onChangeAutoFlip,
   onChangeKingdom,
@@ -27,6 +34,8 @@ export function MatchSetupScreen({
 }: MatchSetupScreenProps) {
   const aiProfile = AI_PROFILES[settings.difficulty];
   const characterSetCfg = CHARACTER_SETS[settings.characterSet];
+  const skinCfg = PIECE_SKINS[pieceSkin] ?? PIECE_SKINS['royal-standard'];
+  const arenaCfg = BOARD_ARENAS[boardTheme] ?? BOARD_ARENAS['classic-citadel'];
   const isAI = settings.mode === 'ai';
 
   return (
@@ -72,7 +81,7 @@ export function MatchSetupScreen({
               </div>
 
               <div className="flex items-center justify-between gap-2 py-2.5">
-                <dt className="text-slate-400">Character Set</dt>
+                <dt className="text-slate-400">Kingdom Army</dt>
                 <dd className="flex items-center gap-2">
                   <span className={`font-semibold ${characterSetCfg.badgeTextClass}`}>
                     {characterSetCfg.name}
@@ -87,6 +96,16 @@ export function MatchSetupScreen({
                     </button>
                   )}
                 </dd>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 py-2.5">
+                <dt className="text-slate-400">Piece Skin</dt>
+                <dd className={`font-semibold ${skinCfg.badgeTextClass}`}>{skinCfg.name}</dd>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 py-2.5">
+                <dt className="text-slate-400">Battle Arena</dt>
+                <dd className={`font-semibold ${arenaCfg.badgeTextClass}`}>{arenaCfg.name}</dd>
               </div>
 
               <div className="flex items-center justify-between py-2.5">

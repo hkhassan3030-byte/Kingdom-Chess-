@@ -1,9 +1,12 @@
-import { Crown, Eye, Home, RotateCcw, Shield, Skull } from 'lucide-react';
+import { Award, Coins, Crown, Eye, Gem, Home, RotateCcw, Shield, Skull, Sparkles } from 'lucide-react';
 import { AI_PROFILES, TIME_CONTROLS, type GameSettings, type GameStatus } from '../types/chess';
+import type { MatchRewardSummary } from '../types/progression';
 
 interface GameOverModalProps {
   status: GameStatus;
   settings: GameSettings;
+  rewardSummary?: MatchRewardSummary | null;
+  onOpenTreasury?: () => void;
   onRematch: () => void;
   onMainMenu: () => void;
   onInspectBoard: () => void;
@@ -12,6 +15,8 @@ interface GameOverModalProps {
 export function GameOverModal({
   status,
   settings,
+  rewardSummary,
+  onOpenTreasury,
   onRematch,
   onMainMenu,
   onInspectBoard,
@@ -70,7 +75,7 @@ export function GameOverModal({
 
   return (
     <div className="animate-modal-backdrop fixed inset-0 z-40 flex items-center justify-center bg-black/75 p-4">
-      <div className="fantasy-panel animate-modal-panel w-full max-w-md rounded-2xl p-6 text-center">
+      <div className="fantasy-panel animate-modal-panel max-h-[90dvh] w-full max-w-md overflow-y-auto rounded-2xl p-5 text-center sm:p-6">
         <div
           className={`mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border ${
             isDraw
@@ -101,8 +106,75 @@ export function GameOverModal({
         </h2>
         <p className="mt-1.5 text-sm text-slate-300">{reasonText}</p>
 
+        {/* Earned Currency & Progression Summary */}
+        {rewardSummary && (
+          <div className="mt-4 rounded-xl border border-amber-400/30 bg-[#0d1422]/85 p-3 text-left">
+            {rewardSummary.eligible &&
+            (rewardSummary.totalCoins > 0 || rewardSummary.totalGems > 0) ? (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-amber-200 uppercase">
+                    <Sparkles className="h-3.5 w-3.5 text-amber-300" />
+                    Rewards Earned
+                  </span>
+                  <div className="font-mono-tabular flex items-center gap-3 text-sm font-bold">
+                    {rewardSummary.totalCoins > 0 && (
+                      <span className="flex items-center gap-1 text-amber-300">
+                        <Coins className="h-4 w-4" />+{rewardSummary.totalCoins}
+                      </span>
+                    )}
+                    {rewardSummary.totalGems > 0 && (
+                      <span className="flex items-center gap-1 text-sky-300">
+                        <Gem className="h-4 w-4" />+{rewardSummary.totalGems}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {rewardSummary.firstTimeBonuses.length > 0 && (
+                  <ul className="mt-2 space-y-1 border-t border-white/10 pt-2 text-[11px]">
+                    {rewardSummary.firstTimeBonuses.map((bonus) => (
+                      <li
+                        key={bonus.id}
+                        className="flex items-center justify-between text-emerald-300"
+                      >
+                        <span className="truncate">{bonus.label}</span>
+                        <span className="font-mono-tabular shrink-0 font-bold">
+                          +{bonus.coins}c{bonus.gems > 0 ? ` +${bonus.gems}g` : ''}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {rewardSummary.newlyReadyMilestones.length > 0 && (
+                  <div className="mt-2 flex items-center justify-between gap-2 border-t border-white/10 pt-2">
+                    <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] font-semibold text-amber-200">
+                      <Award className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+                      Milestone Ready: {rewardSummary.newlyReadyMilestones[0]}
+                    </span>
+                    {onOpenTreasury && (
+                      <button
+                        type="button"
+                        onClick={onOpenTreasury}
+                        className="shrink-0 rounded-lg border border-amber-400/50 bg-amber-400/15 px-2.5 py-1 text-[10px] font-bold tracking-wider text-amber-100 uppercase hover:bg-amber-400/25"
+                      >
+                        Claim
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="text-center text-[11px] text-slate-400">
+                {rewardSummary.ineligibleReason ?? 'No Coins or Gems earned for this match.'}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Match Stats Dossier */}
-        <dl className="mt-5 divide-y divide-white/8 rounded-xl border border-white/10 bg-[#0b0f18]/75 px-4 py-1 text-left text-xs sm:text-sm">
+        <dl className="mt-4 divide-y divide-white/8 rounded-xl border border-white/10 bg-[#0b0f18]/75 px-4 py-1 text-left text-xs sm:text-sm">
           <div className="flex items-center justify-between py-2">
             <dt className="text-slate-400">Winner</dt>
             <dd className="font-semibold text-amber-100">{winnerName}</dd>

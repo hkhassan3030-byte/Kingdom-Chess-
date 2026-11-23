@@ -1,21 +1,38 @@
 import { useEffect, useState } from 'react';
-import { Music, Volume2, VolumeX, X } from 'lucide-react';
+import { Lock, Music, Volume2, VolumeX, X } from 'lucide-react';
 import { audioManager } from '../audio/AudioManager';
+import {
+  UNLOCKABLE_BY_ID,
+  getBoardThemeUnlockId,
+  getCharacterSetUnlockId,
+  getItemsByCategory,
+  getPieceSkinUnlockId,
+  isBoardThemeUnlocked,
+  isCharacterSetUnlocked,
+  isPieceSkinUnlocked,
+} from '../engine/unlockables';
 import { CHARACTER_SETS, CHARACTER_SET_ORDER } from '../three/characterSets';
 import { getBuildVersionInfo, getInstalledAppVersionInfo } from '../utils/appVersion';
 import {
   AI_DIFFICULTY_ORDER,
   AI_PROFILES,
   TIME_CONTROLS,
+  type BoardThemeId,
   type GameMode,
   type GameSettings,
   type GraphicsQuality,
   type PieceColor,
+  type PieceSkinId,
 } from '../types/chess';
 
 interface SettingsModalProps {
   settings: GameSettings;
   inGame: boolean;
+  unlockedIds?: readonly string[];
+  pieceSkin?: PieceSkinId;
+  boardTheme?: BoardThemeId;
+  onChangePieceSkin?: (skin: PieceSkinId) => void;
+  onChangeBoardTheme?: (theme: BoardThemeId) => void;
   onApplyAndStart: (next: GameSettings) => void;
   onUpdateLiveSettings: (next: GameSettings) => void;
   onClose: () => void;
@@ -24,11 +41,18 @@ interface SettingsModalProps {
 export function SettingsModal({
   settings,
   inGame,
+  unlockedIds,
+  pieceSkin = 'royal-standard',
+  boardTheme = 'classic-citadel',
+  onChangePieceSkin,
+  onChangeBoardTheme,
   onApplyAndStart,
   onUpdateLiveSettings,
   onClose,
 }: SettingsModalProps) {
   const [draft, setDraft] = useState<GameSettings>({ ...settings });
+  const [draftPieceSkin, setDraftPieceSkin] = useState<PieceSkinId>(pieceSkin);
+  const [draftBoardTheme, setDraftBoardTheme] = useState<BoardThemeId>(boardTheme);
   const [versionInfo, setVersionInfo] = useState(() => getBuildVersionInfo());
 
   useEffect(() => {
@@ -70,9 +94,16 @@ export function SettingsModal({
   const handleSave = () => {
     const finalized: GameSettings = {
       ...draft,
+      pieceSkin: draftPieceSkin,
       soundEnabled: !draft.muteAll && draft.sfxVolume > 0,
       musicEnabled: !draft.muteAll && draft.musicVolume > 0,
     };
+    if (onChangePieceSkin && draftPieceSkin !== pieceSkin) {
+      onChangePieceSkin(draftPieceSkin);
+    }
+    if (onChangeBoardTheme && draftBoardTheme !== boardTheme) {
+      onChangeBoardTheme(draftBoardTheme);
+    }
     if (matchChanged) {
       onApplyAndStart(finalized);
     } else {
@@ -233,7 +264,7 @@ export function SettingsModal({
             </>
           )}
 
-          {/* Hero Character Set Selector (live-switchable) */}
+          {/* Hero Character Set Selector (live-switchable for unlocked sets) */}
           <div className={inGame ? 'border-t border-white/10 pt-3' : ''}>
             <label className="block text-xs font-semibold text-slate-300">
               Kingdom Character Set
@@ -242,30 +273,175 @@ export function SettingsModal({
               {CHARACTER_SET_ORDER.map((setId) => {
                 const cfg = CHARACTER_SETS[setId];
                 const active = draft.characterSet === setId;
+                const unlocked = unlockedIds ? isCharacterSetUnlocked(unlockedIds, setId) : true;
+                const itemMeta = UNLOCKABLE_BY_ID[getCharacterSetUnlockId(setId)];
                 return (
                   <button
                     key={setId}
                     type="button"
+                    disabled={!unlocked}
                     data-sfx="custom"
                     onClick={() => {
+                      if (!unlocked) return;
                       audioManager.playKingdomSelect(setId);
                       setDraft((d) => ({ ...d, characterSet: setId }));
                     }}
                     className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-left text-xs transition-colors ${
-                      active
+                      !unlocked
+                        ? 'cursor-not-allowed border-white/6 bg-white/3 text-slate-500'
+                        : active
                         ? 'border-amber-400 bg-amber-400/18 text-amber-100'
                         : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
                     }`}
                   >
-                    <span className="font-semibold">{cfg.name}</span>
-                    <span className={`text-[11px] font-medium ${cfg.badgeTextClass}`}>
-                      {cfg.combat.styleLabel}
+                    <span className="flex items-center gap-2 font-semibold">
+                      {!unlocked && <Lock className="h-3.5 w-3.5 text-slate-500" />}
+                      <span>{cfg.name}</span>
+                    </span>
+                    <span
+                      className={`text-[11px] font-medium ${
+                        unlocked ? cfg.badgeTextClass : 'text-slate-500'
+                      }`}
+                    >
+                      {unlocked
+                        ? cfg.combat.styleLabel
+                        : itemMeta
+                        ? `Unlock in Treasury (${itemMeta.cost} ${itemMeta.currency})`
+                        : 'Locked'}
                     </span>
                   </button>
                 );
               })}
             </div>
           </div>
+
+          {/* Piece Skin Selector */}
+          {onChangePieceSkin && (
+            <div className="border-t border-white/10 pt-3">
+              <label className="block text-xs font-semibold text-slate-300">
+                Character Piece Skin
+              </label>
+              <div className="mt-1.5 grid grid-cols-1 gap-1.5">
+                {getItemsByCategory('piece_skin').map((skinItem) => {
+                  const skinId = skinItem.targetId as PieceSkinId;
+                  const active = draftPieceSkin === skinId;
+                  const unlocked = unlockedIds
+                    ? isPieceSkinUnlocked(unlockedIds, skinId)
+                    : true;
+                  const itemMeta = UNLOCKABLE_BY_ID[getPieceSkinUnlockId(skinId)];
+                  return (
+                    <button
+                      key={skinItem.id}
+                      type="button"
+                      disabled={!unlocked}
+                      data-sfx="tab"
+                      onClick={() => {
+                        if (!unlocked) return;
+                        audioManager.playTabSwitch();
+                        setDraftPieceSkin(skinId);
+                      }}
+                      className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-left text-xs transition-colors ${
+                        !unlocked
+                          ? 'cursor-not-allowed border-white/6 bg-white/3 text-slate-500'
+                          : active
+                          ? 'border-amber-400 bg-amber-400/18 text-amber-100'
+                          : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2 font-semibold">
+                        {!unlocked ? (
+                          <Lock className="h-3.5 w-3.5 text-slate-500" />
+                        ) : (
+                          <span
+                            className="h-3 w-3 rounded-sm border border-white/30"
+                            style={{
+                              background: `linear-gradient(135deg, ${skinItem.swatchColors[0]} 50%, ${skinItem.swatchColors[1]} 50%)`,
+                            }}
+                          />
+                        )}
+                        <span>{skinItem.name}</span>
+                      </span>
+                      <span
+                        className={`text-[11px] font-medium ${
+                          unlocked ? skinItem.badgeTextClass : 'text-slate-500'
+                        }`}
+                      >
+                        {unlocked
+                          ? skinItem.subtitle
+                          : itemMeta
+                          ? `${itemMeta.cost} ${itemMeta.currency}`
+                          : 'Locked'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* 3D Battle Arena Selector */}
+          {onChangeBoardTheme && (
+            <div className="border-t border-white/10 pt-3">
+              <label className="block text-xs font-semibold text-slate-300">
+                3D Battle Arena
+              </label>
+              <div className="mt-1.5 grid grid-cols-1 gap-1.5">
+                {getItemsByCategory('board_theme').map((boardItem) => {
+                  const themeId = boardItem.targetId as BoardThemeId;
+                  const active = draftBoardTheme === themeId;
+                  const unlocked = unlockedIds
+                    ? isBoardThemeUnlocked(unlockedIds, themeId)
+                    : true;
+                  const itemMeta = UNLOCKABLE_BY_ID[getBoardThemeUnlockId(themeId)];
+                  return (
+                    <button
+                      key={boardItem.id}
+                      type="button"
+                      disabled={!unlocked}
+                      data-sfx="tab"
+                      onClick={() => {
+                        if (!unlocked) return;
+                        audioManager.playTabSwitch();
+                        setDraftBoardTheme(themeId);
+                      }}
+                      className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-left text-xs transition-colors ${
+                        !unlocked
+                          ? 'cursor-not-allowed border-white/6 bg-white/3 text-slate-500'
+                          : active
+                          ? 'border-amber-400 bg-amber-400/18 text-amber-100'
+                          : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2 font-semibold">
+                        {!unlocked ? (
+                          <Lock className="h-3.5 w-3.5 text-slate-500" />
+                        ) : (
+                          <span
+                            className="h-3 w-3 rounded-sm border border-white/30"
+                            style={{
+                              background: `linear-gradient(135deg, ${boardItem.swatchColors[0]} 50%, ${boardItem.swatchColors[1]} 50%)`,
+                            }}
+                          />
+                        )}
+                        <span>{boardItem.name}</span>
+                      </span>
+                      <span
+                        className={`text-[11px] font-medium ${
+                          unlocked ? boardItem.badgeTextClass : 'text-slate-500'
+                        }`}
+                      >
+                        {unlocked
+                          ? boardItem.subtitle
+                          : itemMeta
+                          ? `${itemMeta.cost} ${itemMeta.currency}`
+                          : 'Locked'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Audio Controls: Music Volume, SFX Volume, Mute All */}
           <div className="space-y-2.5 border-t border-white/10 pt-3">

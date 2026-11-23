@@ -1,13 +1,25 @@
-import { memo, useState } from 'react';
-import { ArrowLeft, Check, ChevronRight, Shield, Swords } from 'lucide-react';
+import { memo, useEffect, useState } from 'react';
+import { ArrowLeft, Check, ChevronRight, Coins, Gem, Lock, Shield, Swords } from 'lucide-react';
+import {
+  UNLOCKABLE_BY_ID,
+  canAffordUnlock,
+  getCharacterSetUnlockId,
+  isCharacterSetUnlocked,
+} from '../engine/unlockables';
 import { CHARACTER_SETS, CHARACTER_SET_ORDER } from '../three/characterSets';
 import { KingdomPreviewCanvas } from '../three/KingdomPreviewCanvas';
-import type { CharacterSetId, GraphicsQuality, PieceType } from '../types/chess';
+import type { BoardThemeId, CharacterSetId, GraphicsQuality, PieceSkinId, PieceType } from '../types/chess';
+import type { CurrencyWallet } from '../types/progression';
 
 interface KingdomSelectScreenProps {
   selectedSet: CharacterSetId;
+  pieceSkin?: PieceSkinId;
+  boardTheme?: BoardThemeId;
+  unlockedIds: readonly string[];
+  wallet: CurrencyWallet;
   quality: GraphicsQuality;
   onSelectSet: (setId: CharacterSetId) => void;
+  onUnlockSet: (setId: CharacterSetId) => void;
   onContinue: () => void;
   onBack: () => void;
 }
@@ -23,14 +35,35 @@ const ROSTER_ORDER: Array<{ type: PieceType; label: string }> = [
 
 export const KingdomSelectScreen = memo(function KingdomSelectScreen({
   selectedSet,
+  pieceSkin = 'royal-standard',
+  boardTheme = 'classic-citadel',
+  unlockedIds,
+  wallet,
   quality,
   onSelectSet,
+  onUnlockSet,
   onContinue,
   onBack,
 }: KingdomSelectScreenProps) {
   const [focusPiece, setFocusPiece] = useState<PieceType>('n');
-  const activeCfg = CHARACTER_SETS[selectedSet];
+  const [previewSet, setPreviewSet] = useState<CharacterSetId>(selectedSet);
+
+  useEffect(() => {
+    setPreviewSet(selectedSet);
+  }, [selectedSet]);
+
+  const activeCfg = CHARACTER_SETS[previewSet];
   const focusedHero = activeCfg.pieces[focusPiece];
+  const previewUnlocked = isCharacterSetUnlocked(unlockedIds, previewSet);
+  const unlockCatalogItem = UNLOCKABLE_BY_ID[getCharacterSetUnlockId(previewSet)];
+  const canAfford = unlockCatalogItem ? canAffordUnlock(wallet, unlockCatalogItem) : false;
+
+  const handleCardTap = (id: CharacterSetId) => {
+    setPreviewSet(id);
+    if (isCharacterSetUnlocked(unlockedIds, id)) {
+      onSelectSet(id);
+    }
+  };
 
   return (
     <section className="animate-screen-in flex h-dvh w-full max-w-full flex-col overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_50%_10%,#1b2438_0%,#0b0f18_75%)] px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(0.85rem,env(safe-area-inset-bottom))] sm:px-8 sm:py-6">
@@ -51,11 +84,20 @@ export const KingdomSelectScreen = memo(function KingdomSelectScreen({
               CHOOSE YOUR KINGDOM
             </h1>
             <p className="truncate text-[11px] text-amber-200/75 sm:text-xs">
-              Select a 3D Hero Character Set
+              Select or Unlock a 3D Hero Character Set
             </p>
           </div>
 
-          <div className="hidden w-[84px] shrink-0 sm:block" aria-hidden="true" />
+          <div className="font-mono-tabular flex shrink-0 items-center gap-2 rounded-xl border border-amber-400/30 bg-[#0b111d]/80 px-2.5 py-1.5 text-xs font-bold">
+            <span className="flex items-center gap-1 text-amber-300">
+              <Coins className="h-3.5 w-3.5" />
+              {wallet.coins}
+            </span>
+            <span className="flex items-center gap-1 text-sky-300">
+              <Gem className="h-3.5 w-3.5" />
+              {wallet.gems}
+            </span>
+          </div>
         </header>
 
         {/* Main Content Grid */}
@@ -67,7 +109,9 @@ export const KingdomSelectScreen = memo(function KingdomSelectScreen({
           >
             <div className="relative h-52 w-full overflow-hidden border-b border-amber-400/20 bg-[#0f1523] sm:h-64">
               <KingdomPreviewCanvas
-                characterSet={selectedSet}
+                characterSet={previewSet}
+                pieceSkin={pieceSkin}
+                boardTheme={boardTheme}
                 quality={quality}
                 focusPiece={focusPiece}
               />
@@ -75,8 +119,9 @@ export const KingdomSelectScreen = memo(function KingdomSelectScreen({
                 aria-hidden="true"
                 className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-[#0b0f1a] via-[#0b0f1a]/65 to-transparent"
               />
-              <div className="pointer-events-none absolute top-2.5 right-3 rounded-md border border-white/10 bg-[#0b0f18]/78 px-2 py-0.5 text-[10px] font-semibold tracking-wider text-slate-300">
-                {focusedHero.roleTitle}
+              <div className="pointer-events-none absolute top-2.5 right-3 flex items-center gap-1.5 rounded-md border border-white/10 bg-[#0b0f18]/78 px-2 py-0.5 text-[10px] font-semibold tracking-wider text-slate-300">
+                {!previewUnlocked && <Lock className="h-3 w-3 text-amber-300" />}
+                <span>{focusedHero.roleTitle}</span>
               </div>
               <div className="pointer-events-none absolute bottom-2.5 left-4 right-4 flex items-end justify-between gap-2">
                 <div className="min-w-0">
@@ -163,17 +208,21 @@ export const KingdomSelectScreen = memo(function KingdomSelectScreen({
             </div>
           </div>
 
-          {/* Right: 5 Selectable Character Sets */}
-          <div className="flex flex-col gap-2.5">
+          {/* Right: 8 Selectable Character Sets */}
+          <div className="flex flex-col gap-2 lg:max-h-[calc(100dvh-13.5rem)] lg:overflow-y-auto lg:pr-1">
             {CHARACTER_SET_ORDER.map((id) => {
               const cfg = CHARACTER_SETS[id];
-              const isSelected = selectedSet === id;
+              const isSelected = previewSet === id;
+              const isEquipped = selectedSet === id;
+              const unlocked = isCharacterSetUnlocked(unlockedIds, id);
+              const catalogItem = UNLOCKABLE_BY_ID[getCharacterSetUnlockId(id)];
+
               return (
                 <button
                   key={id}
                   type="button"
                   data-sfx="custom"
-                  onClick={() => onSelectSet(id)}
+                  onClick={() => handleCardTap(id)}
                   className={`flex min-h-[68px] w-full items-center justify-between gap-3 rounded-2xl border bg-gradient-to-r px-4 py-3 text-left transition-all duration-150 active:scale-[0.99] ${
                     isSelected
                       ? `${cfg.borderActiveClass} ${cfg.cardBgClass} shadow-[0_0_24px_rgba(245,180,65,0.18)]`
@@ -187,7 +236,7 @@ export const KingdomSelectScreen = memo(function KingdomSelectScreen({
                         background: `linear-gradient(135deg, ${cfg.swatchColors[0]} 0%, ${cfg.swatchColors[1]} 100%)`,
                       }}
                     >
-                      {cfg.number}
+                      {unlocked ? cfg.number : <Lock className="h-4.5 w-4.5 text-slate-950" />}
                     </div>
 
                     <div className="min-w-0">
@@ -199,6 +248,11 @@ export const KingdomSelectScreen = memo(function KingdomSelectScreen({
                         >
                           {cfg.name}
                         </span>
+                        {isEquipped && unlocked && (
+                          <span className="text-[10px] font-bold tracking-wider text-emerald-300 uppercase">
+                            Equipped
+                          </span>
+                        )}
                       </div>
                       <div className={`truncate text-xs font-medium ${cfg.badgeTextClass}`}>
                         {cfg.tagline}
@@ -210,7 +264,20 @@ export const KingdomSelectScreen = memo(function KingdomSelectScreen({
                   </div>
 
                   <div className="flex shrink-0 items-center gap-2">
-                    {isSelected ? (
+                    {!unlocked && catalogItem ? (
+                      <span
+                        className={`font-mono-tabular flex items-center gap-1 rounded-xl border border-white/10 bg-[#0b0f18]/85 px-2.5 py-1 text-xs font-bold ${
+                          catalogItem.currency === 'coins' ? 'text-amber-300' : 'text-sky-300'
+                        }`}
+                      >
+                        {catalogItem.currency === 'coins' ? (
+                          <Coins className="h-3.5 w-3.5" />
+                        ) : (
+                          <Gem className="h-3.5 w-3.5" />
+                        )}
+                        {catalogItem.cost}
+                      </span>
+                    ) : isSelected ? (
                       <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-amber-400/50 bg-amber-400/20 text-amber-200">
                         <Check className="h-4 w-4" />
                       </span>
@@ -226,14 +293,41 @@ export const KingdomSelectScreen = memo(function KingdomSelectScreen({
 
         {/* Bottom Primary CTA */}
         <div className="sticky bottom-0 border-t border-amber-400/15 bg-[#0b0f18]/95 pt-3 pb-1">
-          <button
-            type="button"
-            onClick={onContinue}
-            className="fantasy-btn-primary flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl px-6 text-sm font-bold tracking-[0.08em] uppercase sm:text-base"
-          >
-            <span className="font-display">Continue with {activeCfg.name}</span>
-            <ChevronRight className="h-5 w-5" />
-          </button>
+          {previewUnlocked ? (
+            <button
+              type="button"
+              onClick={onContinue}
+              className="fantasy-btn-primary flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl px-6 text-sm font-bold tracking-[0.08em] uppercase sm:text-base"
+            >
+              <span className="font-display">Continue with {activeCfg.name}</span>
+              <ChevronRight className="h-5 w-5" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={!canAfford}
+              data-sfx="custom"
+              onClick={() => onUnlockSet(previewSet)}
+              className={`flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl px-6 text-sm font-bold tracking-[0.08em] uppercase sm:text-base ${
+                canAfford
+                  ? 'fantasy-btn-primary'
+                  : 'cursor-not-allowed border border-white/12 bg-white/6 text-slate-400'
+              }`}
+            >
+              <Lock className="h-4.5 w-4.5" />
+              <span className="font-display">
+                {canAfford && unlockCatalogItem
+                  ? `Unlock ${activeCfg.name} · ${unlockCatalogItem.cost} ${
+                      unlockCatalogItem.currency === 'coins' ? 'Coins' : 'Gems'
+                    }`
+                  : unlockCatalogItem
+                  ? `Locked · Need ${unlockCatalogItem.cost} ${
+                      unlockCatalogItem.currency === 'coins' ? 'Coins' : 'Gems'
+                    } (Win Matches to Earn)`
+                  : 'Locked'}
+              </span>
+            </button>
+          )}
         </div>
       </div>
     </section>

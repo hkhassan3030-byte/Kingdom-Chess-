@@ -4,6 +4,7 @@ import { CHARACTER_SETS } from './characterSets';
 import type { CharacterRig } from './createCharacterPieces';
 import type {
   CharacterSetId,
+  GraphicsQuality,
   MoveAnimationPayload,
   PieceColor,
   PieceType,
@@ -71,9 +72,9 @@ export function getCombatDuration(
   characterSet: CharacterSetId = 'human'
 ): number {
   const speedScale =
-    characterSet === 'titan' || characterSet === 'shadow'
+    characterSet === 'titan' || characterSet === 'shadow' || characterSet === 'storm'
       ? 0.88
-      : characterSet === 'celestial'
+      : characterSet === 'celestial' || characterSet === 'sylvan'
       ? 0.94
       : 1.0;
   let base = 1.85;
@@ -162,67 +163,11 @@ interface PooledBloodDrop {
   vel: THREE.Vector3;
   age: number;
   maxAge: number;
+  baseScale: number;
   landed: boolean;
 }
 
-interface PooledBloodDecal {
-  active: boolean;
-  mesh: THREE.Mesh;
-  mat: THREE.MeshBasicMaterial;
-  age: number;
-  maxAge: number;
-  targetScale: number;
-}
-
-let _cachedBloodDecalCanvas: HTMLCanvasElement | null = null;
-
-function createBloodDecalTexture(): THREE.CanvasTexture {
-  if (!_cachedBloodDecalCanvas) {
-    const size = 64;
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.clearRect(0, 0, size, size);
-      const cx = size * 0.5;
-      const cy = size * 0.5;
-      const grad = ctx.createRadialGradient(cx, cy, 2, cx, cy, 26);
-      grad.addColorStop(0, 'rgba(84, 7, 11, 0.92)');
-      grad.addColorStop(0.45, 'rgba(105, 10, 16, 0.72)');
-      grad.addColorStop(0.8, 'rgba(72, 6, 10, 0.25)');
-      grad.addColorStop(1, 'rgba(50, 4, 6, 0)');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(cx, cy, 26, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Subtle organic irregular droplets around the main stain
-      const lobes: Array<[number, number, number]> = [
-        [cx - 10, cy - 8, 7.5],
-        [cx + 11, cy - 5, 6.2],
-        [cx + 7, cy + 10, 7.8],
-        [cx - 9, cy + 9, 5.8],
-        [cx + 16, cy + 2, 3.6],
-        [cx - 15, cy - 2, 3.4],
-      ];
-      for (let i = 0; i < lobes.length; i++) {
-        const [lx, ly, lr] = lobes[i];
-        const lg = ctx.createRadialGradient(lx, ly, 0.5, lx, ly, lr);
-        lg.addColorStop(0, 'rgba(92, 8, 13, 0.78)');
-        lg.addColorStop(1, 'rgba(65, 5, 8, 0)');
-        ctx.fillStyle = lg;
-        ctx.beginPath();
-        ctx.arc(lx, ly, lr, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    _cachedBloodDecalCanvas = canvas;
-  }
-  const tex = new THREE.CanvasTexture(_cachedBloodDecalCanvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
+const BLOOD_DROP_PALETTE = [0x450509, 0x5c090f, 0x6d0d13, 0x3b0407] as const;
 
 /**
  * Zero-GC Pre-Allocated Combat Effects Pool for smooth 60 FPS mobile combat.
@@ -237,8 +182,10 @@ export class CombatEffectsManager {
   private auraGeo: THREE.TorusGeometry;
   private dustGeo: THREE.DodecahedronGeometry;
   private bloodDropGeo: THREE.SphereGeometry;
-  private bloodDecalGeo: THREE.PlaneGeometry;
-  private bloodDecalTex: THREE.CanvasTexture;
+
+  private reducedMotion = false;
+  private particleScale = 1.0;
+  private hasAnyActive = false;
 
   private trails: PooledTrail[] = [];
   private sparks: PooledSpark[] = [];
@@ -247,7 +194,6 @@ export class CombatEffectsManager {
   private projectiles: PooledProjectile[] = [];
   private dust: PooledDust[] = [];
   private bloodDrops: PooledBloodDrop[] = [];
-  private bloodDecals: PooledBloodDecal[] = [];
 
   constructor(parent: THREE.Group) {
     this.group = parent;
@@ -258,9 +204,7 @@ export class CombatEffectsManager {
     this.orbGeo = new THREE.SphereGeometry(0.1, 10, 8);
     this.auraGeo = new THREE.TorusGeometry(0.16, 0.02, 6, 14);
     this.dustGeo = new THREE.DodecahedronGeometry(0.11, 0);
-    this.bloodDropGeo = new THREE.SphereGeometry(0.02, 6, 5);
-    this.bloodDecalGeo = new THREE.PlaneGeometry(0.5, 0.5);
-    this.bloodDecalTex = createBloodDecalTexture();
+    this.bloodDropGeo = new THREE.SphereGeometry(0.018, 6, 5);
 
     for (let i = 0; i < 4; i++) {
       const mat = new THREE.MeshBasicMaterial({
@@ -381,11 +325,11 @@ export class CombatEffectsManager {
       });
     }
 
-    for (let i = 0; i < 16; i++) {
+    for (let i = 0; i < 44; i++) {
       const mat = new THREE.MeshBasicMaterial({
-        color: 0x52080d,
+        color: BLOOD_DROP_PALETTE[i % BLOOD_DROP_PALETTE.length],
         transparent: true,
-        opacity: 0.86,
+        opacity: 0.9,
         depthWrite: false,
       });
       const mesh = new THREE.Mesh(this.bloodDropGeo, mat);
@@ -398,37 +342,27 @@ export class CombatEffectsManager {
         vel: new THREE.Vector3(),
         age: 0,
         maxAge: 0.72,
+        baseScale: 1,
         landed: false,
-      });
-    }
-
-    for (let i = 0; i < 6; i++) {
-      const mat = new THREE.MeshBasicMaterial({
-        map: this.bloodDecalTex,
-        transparent: true,
-        opacity: 0.72,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -1,
-        polygonOffsetUnits: -1,
-      });
-      const mesh = new THREE.Mesh(this.bloodDecalGeo, mat);
-      mesh.rotation.x = -Math.PI / 2;
-      mesh.renderOrder = 1;
-      mesh.visible = false;
-      this.group.add(mesh);
-      this.bloodDecals.push({
-        active: false,
-        mesh,
-        mat,
-        age: 0,
-        maxAge: 1.4,
-        targetScale: 1.0,
       });
     }
   }
 
+  public setMotionAndQuality(
+    reducedMotion: boolean,
+    quality: GraphicsQuality,
+    particleScaleOverride?: number
+  ) {
+    this.reducedMotion = reducedMotion;
+    const baseScale = quality === 'balanced' ? 0.62 : 1.0;
+    this.particleScale =
+      particleScaleOverride !== undefined
+        ? Math.min(baseScale, particleScaleOverride)
+        : baseScale;
+  }
+
   public clearActive() {
+    this.hasAnyActive = false;
     for (const t of this.trails) {
       t.active = false;
       t.mesh.visible = false;
@@ -456,10 +390,6 @@ export class CombatEffectsManager {
     for (const bd of this.bloodDrops) {
       bd.active = false;
       bd.mesh.visible = false;
-    }
-    for (const bc of this.bloodDecals) {
-      bc.active = false;
-      bc.mesh.visible = false;
     }
   }
 
@@ -494,11 +424,13 @@ export class CombatEffectsManager {
     slot.mesh.rotation.z = options.tiltZ ?? 0;
     slot.mesh.scale.setScalar(options.scale ?? 1.0);
     slot.mesh.visible = true;
+    this.hasAnyActive = true;
   }
 
   public spawnSparks(pos: THREE.Vector3, colorHex: number, count = 10) {
+    const targetCount = Math.max(3, Math.round(count * this.particleScale));
     let spawned = 0;
-    for (let i = 0; i < this.sparks.length && spawned < count; i++) {
+    for (let i = 0; i < this.sparks.length && spawned < targetCount; i++) {
       const slot = this.sparks[i];
       if (slot.active) continue;
       slot.active = true;
@@ -514,6 +446,7 @@ export class CombatEffectsManager {
       slot.mesh.visible = true;
       spawned++;
     }
+    if (spawned > 0) this.hasAnyActive = true;
   }
 
   public spawnImpactFlash(pos: THREE.Vector3, colorHex = 0xfff3c4, maxScale = 1.75) {
@@ -533,6 +466,7 @@ export class CombatEffectsManager {
     slot.mesh.position.copy(pos);
     slot.mesh.scale.setScalar(0.5);
     slot.mesh.visible = true;
+    this.hasAnyActive = true;
   }
 
   public spawnShockwave(pos: THREE.Vector3, colorHex: number, maxScale = 3.0, height = 0.12) {
@@ -552,11 +486,13 @@ export class CombatEffectsManager {
     slot.mesh.position.set(pos.x, height, pos.z);
     slot.mesh.scale.set(1, 1, 1);
     slot.mesh.visible = true;
+    this.hasAnyActive = true;
   }
 
   public spawnDust(pos: THREE.Vector3, count = 5) {
+    const targetCount = Math.max(2, Math.round(count * this.particleScale));
     let spawned = 0;
-    for (let i = 0; i < this.dust.length && spawned < count; i++) {
+    for (let i = 0; i < this.dust.length && spawned < targetCount; i++) {
       const slot = this.dust[i];
       if (slot.active) continue;
       slot.active = true;
@@ -571,6 +507,7 @@ export class CombatEffectsManager {
       slot.mesh.visible = true;
       spawned++;
     }
+    if (spawned > 0) this.hasAnyActive = true;
   }
 
   public spawnMagicProjectile(
@@ -598,13 +535,33 @@ export class CombatEffectsManager {
     slot.group.position.copy(start);
     slot.group.rotation.set(0, 0, 0);
     slot.group.visible = true;
+    this.hasAnyActive = true;
   }
 
   /**
-   * Subtle, grounded pooled blood splash & short-lived board stain on lethal defeat.
-   * Stays anchored on the board surface (y=0.008-0.012) with zero floating gore.
+   * Realistic directional blood impact burst matched to strike vector and intensity.
+   * Respects reduced-motion & low quality, and stamps permanent ground stains via callback.
    */
-  public spawnBloodSplash(pos: THREE.Vector3, count = 7) {
+  public spawnBloodImpactBurst(
+    pos: THREE.Vector3,
+    impactDir: THREE.Vector3,
+    intensity = 1.0,
+    onGroundStain?: (x: number, z: number, dirX: number, dirZ: number, intensity: number) => void
+  ) {
+    const dirLen = Math.hypot(impactDir.x, impactDir.z);
+    const dx = dirLen > 0.001 ? impactDir.x / dirLen : 0;
+    const dz = dirLen > 0.001 ? impactDir.z / dirLen : 1;
+
+    if (onGroundStain) {
+      onGroundStain(pos.x, pos.z, dx, dz, intensity);
+    }
+
+    if (this.reducedMotion) return;
+
+    const baseCount = Math.round((8 + intensity * 10) * this.particleScale);
+    const count = Math.max(4, baseCount);
+    const baseAngle = Math.atan2(dx, dz);
+
     let spawned = 0;
     for (let i = 0; i < this.bloodDrops.length && spawned < count; i++) {
       const slot = this.bloodDrops[i];
@@ -612,41 +569,114 @@ export class CombatEffectsManager {
       slot.active = true;
       slot.age = 0;
       slot.landed = false;
-      slot.maxAge = 0.62 + Math.random() * 0.2;
-      slot.mat.opacity = 0.84;
-      const ang = Math.random() * Math.PI * 2;
-      const startH = 0.1 + Math.random() * 0.2;
-      slot.mesh.position.set(
-        pos.x + Math.cos(ang) * 0.05,
-        startH,
-        pos.z + Math.sin(ang) * 0.05
+      slot.maxAge = 0.42 + Math.random() * 0.46;
+
+      // Blend directional strike spray (~75%) with radial back-splatter (~25%)
+      const isForwardSpray = spawned % 4 !== 0;
+      const spread = isForwardSpray ? (Math.random() - 0.5) * 1.15 : (Math.random() - 0.5) * Math.PI * 2;
+      const ang = baseAngle + spread;
+      const sizeScale = (0.55 + Math.random() * 0.85) * (0.85 + intensity * 0.25);
+      slot.baseScale = sizeScale;
+      slot.mat.color.setHex(
+        BLOOD_DROP_PALETTE[(spawned + Math.floor(Math.random() * 3)) % BLOOD_DROP_PALETTE.length]
       );
-      slot.mesh.scale.setScalar(0.7 + Math.random() * 0.4);
-      const speed = 0.55 + Math.random() * 1.05;
-      slot.vel.set(Math.cos(ang) * speed, 0.35 + Math.random() * 0.72, Math.sin(ang) * speed);
+      slot.mat.opacity = 0.82 + Math.random() * 0.14;
+
+      const startY = Math.max(0.18, pos.y > 0.05 ? pos.y : 0.72 + (Math.random() - 0.5) * 0.35);
+      slot.mesh.position.set(
+        pos.x + (Math.random() - 0.5) * 0.14,
+        startY,
+        pos.z + (Math.random() - 0.5) * 0.14
+      );
+      slot.mesh.scale.set(sizeScale, sizeScale * 1.35, sizeScale);
+
+      const horizSpeed = (isForwardSpray ? 0.95 + Math.random() * 1.75 : 0.45 + Math.random() * 0.9) * (0.7 + intensity * 0.4);
+      const vertSpeed = (0.35 + Math.random() * 1.35) * (0.75 + intensity * 0.3);
+      slot.vel.set(Math.sin(ang) * horizSpeed, vertSpeed, Math.cos(ang) * horizSpeed);
       slot.mesh.visible = true;
       spawned++;
     }
+    if (spawned > 0) this.hasAnyActive = true;
+  }
 
-    let decalSlot = this.bloodDecals[0];
-    for (let i = 0; i < this.bloodDecals.length; i++) {
-      if (!this.bloodDecals[i].active) {
-        decalSlot = this.bloodDecals[i];
-        break;
-      }
+  /**
+   * Subtle, grounded blood splash emitted when a defeated warrior hits the battlefield.
+   */
+  public spawnBloodSplash(
+    pos: THREE.Vector3,
+    count = 9,
+    onGroundStain?: (x: number, z: number, dirX: number, dirZ: number, intensity: number) => void
+  ) {
+    _tmpD.set(0, 0, 1);
+    if (onGroundStain) {
+      onGroundStain(pos.x, pos.z, 0, 1, 0.75);
     }
-    decalSlot.active = true;
-    decalSlot.age = 0;
-    decalSlot.maxAge = 1.4;
-    decalSlot.targetScale = 0.88 + Math.random() * 0.22;
-    decalSlot.mat.opacity = 0.72;
-    decalSlot.mesh.position.set(pos.x, 0.008, pos.z);
-    decalSlot.mesh.rotation.z = Math.random() * Math.PI * 2;
-    decalSlot.mesh.scale.setScalar(0.32);
-    decalSlot.mesh.visible = true;
+    if (this.reducedMotion) return;
+
+    const scaledCount = Math.max(4, Math.round(count * this.particleScale));
+    let spawned = 0;
+    for (let i = 0; i < this.bloodDrops.length && spawned < scaledCount; i++) {
+      const slot = this.bloodDrops[i];
+      if (slot.active) continue;
+      slot.active = true;
+      slot.age = 0;
+      slot.landed = false;
+      slot.maxAge = 0.48 + Math.random() * 0.32;
+      const sizeScale = 0.6 + Math.random() * 0.7;
+      slot.baseScale = sizeScale;
+      slot.mat.opacity = 0.85;
+      const ang = Math.random() * Math.PI * 2;
+      const startH = 0.08 + Math.random() * 0.18;
+      slot.mesh.position.set(
+        pos.x + Math.cos(ang) * 0.08,
+        startH,
+        pos.z + Math.sin(ang) * 0.08
+      );
+      slot.mesh.scale.setScalar(sizeScale);
+      const speed = 0.45 + Math.random() * 0.95;
+      slot.vel.set(Math.cos(ang) * speed, 0.3 + Math.random() * 0.68, Math.sin(ang) * speed);
+      slot.mesh.visible = true;
+      spawned++;
+    }
+    if (spawned > 0) this.hasAnyActive = true;
+  }
+
+  public spawnCheckPulse(pos: THREE.Vector3) {
+    _tmpA.set(pos.x, 0.92, pos.z);
+    this.spawnShockwave(pos, 0xef4444, 2.4, 0.14);
+    this.spawnSparks(_tmpA, 0xfca5a5, 6);
+  }
+
+  public spawnOutcomeBurst(
+    pos: THREE.Vector3,
+    kind: 'checkmate' | 'victory' | 'defeat' | 'draw',
+    accentHex?: number
+  ) {
+    const primary =
+      kind === 'victory' || kind === 'checkmate'
+        ? accentHex ?? 0xfacc15
+        : kind === 'defeat'
+        ? 0xef4444
+        : 0x38bdf8;
+    const secondary =
+      kind === 'victory' || kind === 'checkmate'
+        ? 0xfef08a
+        : kind === 'defeat'
+        ? 0xfb7185
+        : 0xbae6fd;
+
+    _tmpA.set(pos.x, 1.05, pos.z);
+    this.spawnImpactFlash(_tmpA, secondary, 2.25);
+    this.spawnShockwave(pos, primary, 3.85, 0.16);
+    this.spawnShockwave(pos, secondary, 2.55, 0.42);
+    this.spawnSparks(_tmpA, primary, 14);
   }
 
   public update(dt: number) {
+    if (!this.hasAnyActive) return;
+
+    let anyStillActive = false;
+
     for (let i = 0; i < this.trails.length; i++) {
       const t = this.trails[i];
       if (!t.active) continue;
@@ -658,6 +688,7 @@ export class CombatEffectsManager {
       } else {
         t.mesh.rotation.z += dt * 8.5;
         t.mat.opacity = (1 - p) * 0.76;
+        anyStillActive = true;
       }
     }
 
@@ -674,6 +705,7 @@ export class CombatEffectsManager {
         s.mesh.position.addScaledVector(s.vel, dt);
         s.mesh.scale.setScalar(1 - p);
         s.mat.opacity = 1 - p;
+        anyStillActive = true;
       }
     }
 
@@ -689,6 +721,7 @@ export class CombatEffectsManager {
         const sc = 0.5 + easeOutCubic(p) * f.maxScale;
         f.mesh.scale.setScalar(sc);
         f.mat.opacity = (1 - p) * 0.85;
+        anyStillActive = true;
       }
     }
 
@@ -704,6 +737,7 @@ export class CombatEffectsManager {
         const s = 1 + easeOutCubic(p) * sw.maxScale;
         sw.mesh.scale.set(s, s, 1);
         sw.mat.opacity = (1 - p) * 0.85;
+        anyStillActive = true;
       }
     }
 
@@ -719,6 +753,7 @@ export class CombatEffectsManager {
         pr.group.position.lerpVectors(pr.start, pr.end, p);
         pr.group.rotation.y += dt * 15;
         pr.group.rotation.x += dt * 10;
+        anyStillActive = true;
       }
     }
 
@@ -736,6 +771,7 @@ export class CombatEffectsManager {
         const sc = 0.85 + p * 1.65;
         d.mesh.scale.setScalar(sc);
         d.mat.opacity = (1 - p) * 0.4;
+        anyStillActive = true;
       }
     }
 
@@ -749,34 +785,21 @@ export class CombatEffectsManager {
         b.mesh.visible = false;
       } else {
         if (!b.landed) {
-          b.vel.y -= 9.5 * dt;
+          b.vel.y -= 11.2 * dt;
           b.mesh.position.addScaledVector(b.vel, dt);
-          if (b.mesh.position.y <= 0.012) {
-            b.mesh.position.y = 0.012;
+          if (b.mesh.position.y <= 0.011) {
+            b.mesh.position.y = 0.011;
             b.landed = true;
             b.vel.set(0, 0, 0);
-            b.mesh.scale.set(1.3, 0.24, 1.3);
+            b.mesh.scale.set(b.baseScale * 1.38, b.baseScale * 0.22, b.baseScale * 1.38);
           }
         }
         b.mat.opacity = p < 0.45 ? 0.88 : (1 - (p - 0.45) / 0.55) * 0.88;
+        anyStillActive = true;
       }
     }
 
-    for (let i = 0; i < this.bloodDecals.length; i++) {
-      const dc = this.bloodDecals[i];
-      if (!dc.active) continue;
-      dc.age += dt;
-      const p = dc.age / dc.maxAge;
-      if (p >= 1) {
-        dc.active = false;
-        dc.mesh.visible = false;
-      } else {
-        const grow = clamp01(dc.age / 0.22);
-        const s = THREE.MathUtils.lerp(0.32, dc.targetScale, easeOutCubic(grow));
-        dc.mesh.scale.setScalar(s);
-        dc.mat.opacity = p < 0.5 ? 0.72 : (1 - (p - 0.5) / 0.5) * 0.72;
-      }
-    }
+    this.hasAnyActive = anyStillActive;
   }
 
   public dispose() {
@@ -809,10 +832,6 @@ export class CombatEffectsManager {
       this.group.remove(b.mesh);
       b.mat.dispose();
     });
-    this.bloodDecals.forEach((dc) => {
-      this.group.remove(dc.mesh);
-      dc.mat.dispose();
-    });
     this.trails = [];
     this.sparks = [];
     this.shockwaves = [];
@@ -820,7 +839,6 @@ export class CombatEffectsManager {
     this.projectiles = [];
     this.dust = [];
     this.bloodDrops = [];
-    this.bloodDecals = [];
     this.trailGeo.dispose();
     this.sparkGeo.dispose();
     this.shockGeo.dispose();
@@ -829,8 +847,6 @@ export class CombatEffectsManager {
     this.auraGeo.dispose();
     this.dustGeo.dispose();
     this.bloodDropGeo.dispose();
-    this.bloodDecalGeo.dispose();
-    this.bloodDecalTex.dispose();
   }
 }
 
@@ -854,6 +870,7 @@ export interface CombatDuelContext {
   hasClaimStart: boolean;
   characterSet?: CharacterSetId;
   defenderClass?: PieceType;
+  onBloodStain?: (x: number, z: number, dirX: number, dirZ: number, intensity: number) => void;
 }
 
 function shouldFire(ctx: CombatDuelContext, id: string): boolean {
@@ -884,7 +901,7 @@ function applyDefenderFall(
   }
   if (pFall > 0.08 && shouldFire(ctx, 'death_blood')) {
     _tmpD.set(defender.root.position.x, 0, defender.root.position.z);
-    effects.spawnBloodSplash(_tmpD);
+    effects.spawnBloodSplash(_tmpD, 9, ctx.onBloodStain);
   }
   if (pFall > (defeatedClass === 'p' ? 0.16 : 0.42) && shouldFire(ctx, 'defeat_sound')) {
     emitSound(ctx, playSound, 'defenderReaction', defeatedClass);
@@ -1071,6 +1088,7 @@ export function updateCombatDuel(
               effects.spawnShockwave(toPos, shockColor, 3.2);
               effects.spawnSparks(_tmpB, sparkColor, 14);
               effects.spawnDust(toPos, 5);
+              effects.spawnBloodImpactBurst(_tmpB, normDir, 1.05, ctx.onBloodStain);
             }
             const knock = seg(b, 0.73, 1.0);
             defender.torso.rotation.x = -0.35 * knock;
@@ -1126,6 +1144,7 @@ export function updateCombatDuel(
             _tmpC.copy(toPos).setY(1.0);
             effects.spawnImpactFlash(_tmpC, flashColor, 1.5);
             effects.spawnSparks(_tmpC, sparkColor, 12);
+            effects.spawnBloodImpactBurst(_tmpC, normDir, 0.55, ctx.onBloodStain);
           }
           defender.torso.rotation.y = -0.45 * Math.sin((b - 0.6) * Math.PI * 2);
           defender.torso.rotation.x = -0.26;
@@ -1162,6 +1181,7 @@ export function updateCombatDuel(
           effects.spawnImpactFlash(_tmpB, flashColor, 2.0);
           effects.spawnShockwave(toPos, shockColor, 3.4, 0.82);
           effects.spawnSparks(_tmpB, sparkColor, 14);
+          effects.spawnBloodImpactBurst(_tmpB, normDir, 1.0, ctx.onBloodStain);
         }
       } else {
         const f = seg(p, 0.73, 0.88);
@@ -1226,6 +1246,7 @@ export function updateCombatDuel(
             effects.spawnShockwave(toPos, shockColor, 3.8, 0.14);
             effects.spawnSparks(_tmpB, sparkColor, 15);
             effects.spawnDust(toPos, 7);
+            effects.spawnBloodImpactBurst(_tmpB, normDir, 1.15, ctx.onBloodStain);
           }
         }
       } else {
@@ -1302,6 +1323,7 @@ export function updateCombatDuel(
             effects.spawnImpactFlash(_tmpC, flashColor, 2.1);
             effects.spawnShockwave(toPos, shockColor, 3.6, 0.84);
             effects.spawnSparks(_tmpC, sparkColor, 16);
+            effects.spawnBloodImpactBurst(_tmpC, normDir, 0.85, ctx.onBloodStain);
           }
         }
       } else {
@@ -1366,6 +1388,7 @@ export function updateCombatDuel(
           effects.spawnImpactFlash(_tmpB, flashColor, 1.9);
           effects.spawnShockwave(toPos, shockColor, 3.0, 0.16);
           effects.spawnSparks(_tmpB, sparkColor, 14);
+          effects.spawnBloodImpactBurst(_tmpB, normDir, 1.0, ctx.onBloodStain);
         }
       } else {
         const f = seg(p, 0.74, 0.88);
@@ -1416,6 +1439,7 @@ export function updateCombatDuel(
             _tmpC.copy(toPos).setY(1.0);
             effects.spawnImpactFlash(_tmpC, flashColor, 1.5);
             effects.spawnSparks(_tmpC, sparkColor, 12);
+            effects.spawnBloodImpactBurst(_tmpC, normDir, 0.55, ctx.onBloodStain);
           }
           defender.torso.rotation.y = -0.5 * Math.sin((b - 0.49) * Math.PI * 2);
           defender.leftArm.rotation.x = -1.1;
@@ -1456,6 +1480,7 @@ export function updateCombatDuel(
           effects.spawnShockwave(toPos, shockColor, 3.5, 0.14);
           effects.spawnSparks(_tmpD, sparkColor, 14);
           effects.spawnDust(toPos, 6);
+          effects.spawnBloodImpactBurst(_tmpD, normDir, 1.05, ctx.onBloodStain);
         }
       } else {
         const f = seg(p, 0.76, 0.88);
@@ -1518,6 +1543,7 @@ export function updateCombatDuel(
           effects.spawnImpactFlash(_tmpB, flashColor, 1.65);
           effects.spawnShockwave(toPos, shockColor, 2.3, 0.14);
           effects.spawnSparks(_tmpB, sparkColor, 11);
+          effects.spawnBloodImpactBurst(_tmpB, normDir, 0.85, ctx.onBloodStain);
         }
       } else {
         const f = seg(p, 0.72, 0.88);
@@ -1536,7 +1562,7 @@ export function updateCombatDuel(
       emitSound(ctx, playSound, 'defenderReaction', defeatedClass);
     }
     if (shouldFire(ctx, 'death_blood')) {
-      effects.spawnBloodSplash(ctx.capturedPos);
+      effects.spawnBloodSplash(ctx.capturedPos, 9, ctx.onBloodStain);
     }
     const t = easeOutCubic(seg(p, 0.88, 1.0));
     if (!ctx.hasClaimStart) {

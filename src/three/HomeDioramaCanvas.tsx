@@ -7,7 +7,7 @@ import {
   type CharacterRig,
 } from './createCharacterPieces';
 import { createSceneMaterialBank } from './materials';
-import { isSoftwareGlRenderer } from '../utils/webglDetect';
+import { isLowTierDevice, isSoftwareGlRenderer } from '../utils/webglDetect';
 import type { GraphicsQuality } from '../types/chess';
 
 interface HomeDioramaCanvasProps {
@@ -254,11 +254,13 @@ export function HomeDioramaCanvas({ quality }: HomeDioramaCanvasProps) {
   useEffect(() => {
     if (!rendererRef.current || !moonKeyRef.current || isSoftwareGlRef.current) return;
     const high = quality === 'high';
+    const maxDpr = high ? (isLowTierDevice() ? 1.1 : 1.25) : 1.0;
+    const targetDpr = Math.min(window.devicePixelRatio, maxDpr);
     rendererRef.current.shadowMap.enabled = high;
     moonKeyRef.current.castShadow = high;
-    rendererRef.current.setPixelRatio(
-      Math.min(window.devicePixelRatio, high ? 1.35 : 1.0)
-    );
+    if (Math.abs(rendererRef.current.getPixelRatio() - targetDpr) > 0.001) {
+      rendererRef.current.setPixelRatio(targetDpr);
+    }
   }, [quality]);
 
   useEffect(() => {
@@ -282,6 +284,7 @@ export function HomeDioramaCanvas({ quality }: HomeDioramaCanvasProps) {
     let prefersReducedMotion = Boolean(motionQuery?.matches);
 
     const isSoftwareGl = isSoftwareGlRenderer();
+    const isLowTierHw = isLowTierDevice();
     isSoftwareGlRef.current = isSoftwareGl;
 
     const renderer = new THREE.WebGLRenderer({
@@ -293,10 +296,9 @@ export function HomeDioramaCanvas({ quality }: HomeDioramaCanvasProps) {
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.12;
+    const initMaxDpr = qualityRef.current === 'high' ? (isLowTierHw ? 1.1 : 1.25) : 1.0;
     renderer.setPixelRatio(
-      isSoftwareGl
-        ? 1
-        : Math.min(window.devicePixelRatio, qualityRef.current === 'high' ? 1.35 : 1.0)
+      isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, initMaxDpr)
     );
     renderer.shadowMap.enabled = !isSoftwareGl && qualityRef.current === 'high';
     renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -363,7 +365,8 @@ export function HomeDioramaCanvas({ quality }: HomeDioramaCanvasProps) {
     moonKeyRef.current = moonKey;
     moonKey.position.set(-5.2, 11.5, -5.5);
     moonKey.castShadow = !isSoftwareGl && qualityRef.current === 'high';
-    moonKey.shadow.mapSize.set(1024, 1024);
+    const moonShadowSize = isLowTierHw ? 512 : 1024;
+    moonKey.shadow.mapSize.set(moonShadowSize, moonShadowSize);
     moonKey.shadow.camera.near = 1;
     moonKey.shadow.camera.far = 30;
     moonKey.shadow.camera.left = -5.5;
@@ -1021,7 +1024,13 @@ export function HomeDioramaCanvas({ quality }: HomeDioramaCanvasProps) {
       renderer.setSize(rw, rh);
       if (!isSoftwareGl) {
         const high = qualityRef.current === 'high';
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, high ? 1.35 : 1.0));
+        const targetDpr = Math.min(
+          window.devicePixelRatio,
+          high ? (isLowTierHw ? 1.1 : 1.25) : 1.0
+        );
+        if (Math.abs(renderer.getPixelRatio() - targetDpr) > 0.001) {
+          renderer.setPixelRatio(targetDpr);
+        }
       }
       if (prefersReducedMotion) {
         renderer.render(scene, camera);
@@ -1061,6 +1070,7 @@ export function HomeDioramaCanvas({ quality }: HomeDioramaCanvasProps) {
     motionQuery?.addEventListener('change', handleMotionChange);
 
     const clock = new THREE.Clock();
+    let emberAccumDt = 0;
 
     const afterDraw = (cb: () => void) => {
       const gl = renderer.getContext() as WebGL2RenderingContext;
@@ -1128,19 +1138,25 @@ export function HomeDioramaCanvas({ quality }: HomeDioramaCanvasProps) {
           if (c.mesh.position.x > 21) c.mesh.position.x = -21;
         }
 
-        // Rising fire embers
-        const attr = emberGeo.getAttribute('position') as THREE.BufferAttribute;
-        const arr = attr.array as Float32Array;
-        for (let i = 0; i < emberCount; i++) {
-          const i3 = i * 3;
-          arr[i3 + 1] += emberSpeeds[i] * dt;
-          arr[i3] += Math.sin(t * 1.4 + i) * 0.0022;
-          if (arr[i3 + 1] > 4.2) {
-            arr[i3 + 1] = 0.05;
-            arr[i3] = (Math.random() - 0.5) * 7.5;
+        // Rising fire embers (step GPU BufferAttribute upload at ~28Hz in balanced/low-tier mode)
+        const emberInterval = qualityRef.current === 'high' && !isLowTierHw ? 0 : 1 / 28;
+        emberAccumDt += dt;
+        if (emberInterval === 0 || emberAccumDt >= emberInterval) {
+          const emberStep = emberAccumDt;
+          emberAccumDt = 0;
+          const attr = emberGeo.getAttribute('position') as THREE.BufferAttribute;
+          const arr = attr.array as Float32Array;
+          for (let i = 0; i < emberCount; i++) {
+            const i3 = i * 3;
+            arr[i3 + 1] += emberSpeeds[i] * emberStep;
+            arr[i3] += Math.sin(t * 1.4 + i) * 0.0022;
+            if (arr[i3 + 1] > 4.2) {
+              arr[i3 + 1] = 0.05;
+              arr[i3] = (Math.random() - 0.5) * 7.5;
+            }
           }
+          attr.needsUpdate = true;
         }
-        attr.needsUpdate = true;
 
         // Gentle camera breath keeping both Kings safely inside portrait margins
         camera.position.x = Math.sin(t * 0.24) * 0.13;

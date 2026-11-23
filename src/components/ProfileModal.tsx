@@ -1,22 +1,30 @@
 import { useMemo, useState } from 'react';
 import {
   ChevronRight,
+  Coins,
   Crown,
   Flame,
+  Gem,
   History,
+  Lock,
   Pencil,
   Shield,
+  Sparkles,
   Swords,
   TrendingUp,
   Trophy,
   X,
 } from 'lucide-react';
 import type { MatchHistoryEntry, PlayerProfile } from '../types/chess';
+import type { CurrencyWallet } from '../types/progression';
 import { audioManager } from '../audio/AudioManager';
+import { isAvatarUnlocked } from '../engine/unlockables';
 import { deriveOfflineProfileStats } from '../utils/profileStats';
 
 interface ProfileModalProps {
   profile: PlayerProfile;
+  wallet?: CurrencyWallet;
+  unlockedIds?: readonly string[];
   onUpdateProfile: (next: PlayerProfile) => void;
   onOpenLeaderboard?: () => void;
   onOpenGameHistory?: () => void;
@@ -32,6 +40,8 @@ const AVATAR_OPTIONS: Array<{
   { id: 'knight', label: 'Champion', Icon: Trophy },
   { id: 'sword', label: 'Warlord', Icon: Swords },
   { id: 'shield', label: 'Warden', Icon: Shield },
+  { id: 'flame', label: 'Phoenix', Icon: Flame },
+  { id: 'astral', label: 'Astral', Icon: Sparkles },
 ];
 
 export function renderProfileAvatarIcon(avatarId: PlayerProfile['avatarId'], className = 'h-5 w-5') {
@@ -79,6 +89,8 @@ function formatReasonLabel(reason: MatchHistoryEntry['reason']): string {
 
 export function ProfileModal({
   profile,
+  wallet,
+  unlockedIds,
   onUpdateProfile,
   onOpenLeaderboard,
   onOpenGameHistory,
@@ -215,30 +227,63 @@ export function ProfileModal({
 
               <div>
                 <span className="block text-xs font-semibold text-slate-300">Royal Crest</span>
-                <div className="mt-1.5 grid grid-cols-4 gap-2">
+                <div className="mt-1.5 grid grid-cols-3 gap-2">
                   {AVATAR_OPTIONS.map(({ id, label, Icon }) => {
                     const selected = avatarDraft === id;
+                    const unlocked = unlockedIds ? isAvatarUnlocked(unlockedIds, id) : true;
                     return (
                       <button
                         key={id}
                         type="button"
+                        disabled={!unlocked}
                         data-sfx="tab"
                         onClick={() => {
+                          if (!unlocked) return;
                           audioManager.playTabSwitch();
                           setAvatarDraft(id);
                         }}
                         className={`flex min-h-[54px] flex-col items-center justify-center gap-1 rounded-xl border px-2 py-1.5 text-[11px] font-medium transition-colors ${
-                          selected
+                          !unlocked
+                            ? 'cursor-not-allowed border-white/6 bg-white/3 text-slate-500'
+                            : selected
                             ? 'border-amber-400 bg-amber-400/18 text-amber-100'
                             : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
                         }`}
                       >
-                        <Icon className="h-4 w-4 text-amber-300" />
+                        {unlocked ? (
+                          <Icon className="h-4 w-4 text-amber-300" />
+                        ) : (
+                          <Lock className="h-3.5 w-3.5 text-slate-500" />
+                        )}
                         <span className="truncate">{label}</span>
                       </button>
                     );
                   })}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Royal Treasury Wallet Summary */}
+          {wallet && (
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex items-center justify-between rounded-xl border border-amber-400/25 bg-amber-500/8 px-3 py-2">
+                <span className="flex items-center gap-1.5 text-xs font-semibold text-amber-200">
+                  <Coins className="h-4 w-4 text-amber-300" />
+                  Coins
+                </span>
+                <span className="font-mono-tabular text-sm font-bold text-amber-100">
+                  {wallet.coins.toLocaleString()}
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-xl border border-sky-400/25 bg-sky-500/8 px-3 py-2">
+                <span className="flex items-center gap-1.5 text-xs font-semibold text-sky-200">
+                  <Gem className="h-4 w-4 text-sky-300" />
+                  Gems
+                </span>
+                <span className="font-mono-tabular text-sm font-bold text-sky-100">
+                  {wallet.gems.toLocaleString()}
+                </span>
               </div>
             </div>
           )}

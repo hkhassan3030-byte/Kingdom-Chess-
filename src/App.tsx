@@ -16,8 +16,28 @@ import { ModeSelectScreen } from './components/ModeSelectScreen';
 import { PauseModal } from './components/PauseModal';
 import { ProfileModal } from './components/ProfileModal';
 import { PromotionModal } from './components/PromotionModal';
+import { RewardToast, type RewardToastNotice } from './components/RewardToast';
 import { SettingsModal } from './components/SettingsModal';
+import { TreasuryModal } from './components/TreasuryModal';
 import { computeAIMoveAsync } from './engine/aiController';
+import {
+  applyMatchRewardToState,
+  claimMilestoneReward,
+  countClaimableMilestones,
+} from './engine/rewards';
+import {
+  loadProgressionState,
+  saveProgressionState,
+} from './engine/progressionStorage';
+import {
+  getCharacterSetUnlockId,
+  isAvatarUnlocked,
+  isBoardThemeUnlocked,
+  isCharacterSetUnlocked,
+  isPieceSkinUnlocked,
+  unlockCatalogItem,
+} from './engine/unlockables';
+import { PIECE_SKIN_ORDER } from './three/arenaPresets';
 import { CHARACTER_SET_ORDER } from './three/characterSets';
 import type { ChessSceneController } from './three/ChessSceneController';
 import type { CombatSoundEvent } from './three/combatChoreography';
@@ -26,18 +46,22 @@ import {
   AI_PROFILES,
   PIECE_LABELS,
   type BoardPiece,
+  type BoardThemeId,
   type CapturedState,
   type CharacterSetId,
+  type CommanderAvatarId,
   type GameSettings,
   type GameStatus,
   type MatchHistoryEntry,
   type MoveAnimationPayload,
   type PendingPromotion,
   type PieceColor,
+  type PieceSkinId,
   type PieceType,
   type PlayerProfile,
   type ScreenView,
 } from './types/chess';
+import type { MatchRewardSummary, ProgressionState } from './types/progression';
 
 const SETTINGS_STORAGE_KEY = 'kingdom-chess-settings-v2';
 const PROFILE_STORAGE_KEY = 'kingdom-chess-profile-v1';
@@ -94,7 +118,14 @@ function loadInitialProfile(): PlayerProfile {
     const raw = window.localStorage.getItem(PROFILE_STORAGE_KEY);
     if (!raw) return DEFAULT_PROFILE;
     const parsed = JSON.parse(raw) as Partial<PlayerProfile>;
-    const validAvatars: Array<PlayerProfile['avatarId']> = ['crown', 'knight', 'sword', 'shield'];
+    const validAvatars: Array<PlayerProfile['avatarId']> = [
+      'crown',
+      'knight',
+      'sword',
+      'shield',
+      'flame',
+      'astral',
+    ];
     const avatarId = validAvatars.includes(parsed.avatarId as PlayerProfile['avatarId'])
       ? (parsed.avatarId as PlayerProfile['avatarId'])
       : DEFAULT_PROFILE.avatarId;
@@ -126,6 +157,7 @@ const DEFAULT_SETTINGS: GameSettings = {
   difficulty: 'normal',
   playerColor: 'w',
   characterSet: 'human',
+  pieceSkin: 'royal-standard',
   timeControlSeconds: 600,
   soundEnabled: true,
   musicEnabled: true,
@@ -150,6 +182,9 @@ function loadInitialSettings(): GameSettings {
     const validSet = CHARACTER_SET_ORDER.includes(parsed.characterSet as CharacterSetId)
       ? (parsed.characterSet as CharacterSetId)
       : DEFAULT_SETTINGS.characterSet;
+    const validPieceSkin = PIECE_SKIN_ORDER.includes(parsed.pieceSkin as PieceSkinId)
+      ? (parsed.pieceSkin as PieceSkinId)
+      : DEFAULT_SETTINGS.pieceSkin;
 
     let musicVolume = clampVolume(parsed.musicVolume, DEFAULT_SETTINGS.musicVolume);
     let sfxVolume = clampVolume(parsed.sfxVolume, DEFAULT_SETTINGS.sfxVolume);
@@ -172,6 +207,7 @@ function loadInitialSettings(): GameSettings {
       ...DEFAULT_SETTINGS,
       ...parsed,
       characterSet: validSet,
+      pieceSkin: validPieceSkin,
       musicVolume,
       sfxVolume,
       muteAll,
@@ -259,19 +295,22 @@ function buildStatus(
   };
 }
 
-function findCheckSquare(chess: Chess): string | null {
-  if (!chess.inCheck()) return null;
-  const turn = chess.turn();
+function findKingSquare(chess: Chess, color: PieceColor): string | null {
   const board = chess.board();
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
       const cell = board[r][c];
-      if (cell && cell.type === 'k' && cell.color === turn) {
+      if (cell && cell.type === 'k' && cell.color === color) {
         return cell.square;
       }
     }
   }
   return null;
+}
+
+function findCheckSquare(chess: Chess): string | null {
+  if (!chess.inCheck()) return null;
+  return findKingSquare(chess, chess.turn() as PieceColor);
 }
 
 function extractCapturedFromHistory(history: Move[]): CapturedState {
@@ -334,6 +373,9 @@ export default function App() {
   const [screen, setScreen] = useState<ScreenView>('home');
   const [settings, setSettings] = useState<GameSettings>(loadInitialSettings);
   const [profile, setProfile] = useState<PlayerProfile>(loadInitialProfile);
+  const [progression, setProgression] = useState<ProgressionState>(() =>
+    loadProgressionState(loadInitialProfile(), loadInitialSettings())
+  );
   const [pieces, setPieces] = useState<BoardPiece[]>(() => extractPieces(chessRef.current));
   const [captured, setCaptured] = useState<CapturedState>({ w: [], b: [] });
   const [forcedEnd, setForcedEnd] = useState<{
@@ -355,9 +397,13 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [howToPlayOpen, setHowToPlayOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [treasuryOpen, setTreasuryOpen] = useState(false);
   const [dismissedGameOver, setDismissedGameOver] = useState(false);
+  const [lastMatchReward, setLastMatchReward] = useState<MatchRewardSummary | null>(null);
+  const [rewardToast, setRewardToast] = useState<RewardToastNotice | null>(null);
 
   const matchEpochRef = useRef(0);
+  const matchInstanceIdRef = useRef('match-initial-0');
   const animStartEpochRef = useRef(0);
   const checkmateAnnouncedEpochRef = useRef(-1);
   const recordedOutcomeEpochRef = useRef(-1);
@@ -365,6 +411,14 @@ export default function App() {
   const aiAbortRef = useRef<AbortController | null>(null);
   const camResetTimerRef = useRef(0);
   const profileMountedRef = useRef(false);
+  const progressionMountedRef = useRef(false);
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
+  const progressionRef = useRef(progression);
+  progressionRef.current = progression;
+  const toastSeqRef = useRef(0);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const forcedEndRef = useRef<{
     winner: PieceColor;
     reason: 'timeout' | 'resignation';
@@ -394,7 +448,35 @@ export default function App() {
     }
   }, [profile]);
 
-  // Record finished match outcome & history once per match epoch (abandoned games never set isGameOver)
+  useEffect(() => {
+    if (!progressionMountedRef.current) {
+      progressionMountedRef.current = true;
+      return;
+    }
+    saveProgressionState(progression);
+  }, [progression]);
+
+  useEffect(() => {
+    if (!rewardToast) return;
+    const timer = window.setTimeout(() => setRewardToast(null), 4200);
+    return () => window.clearTimeout(timer);
+  }, [rewardToast]);
+
+  const showRewardBanner = useCallback(
+    (title: string, subtitle?: string, coins?: number, gems?: number) => {
+      toastSeqRef.current++;
+      setRewardToast({
+        id: toastSeqRef.current,
+        title,
+        subtitle,
+        coins,
+        gems,
+      });
+    },
+    []
+  );
+
+  // Record finished match outcome, history & progression rewards once per match epoch
   useEffect(() => {
     if (!status.isGameOver || pendingAnimation) return;
     if (recordedOutcomeEpochRef.current === matchEpochRef.current) return;
@@ -409,7 +491,7 @@ export default function App() {
     const opponent = isAI ? `${aiProfile.label} · ${aiProfile.persona}` : 'Local 1 vs 1';
 
     const matchEntry: MatchHistoryEntry = {
-      id: `match-${Date.now()}-${matchEpochRef.current}`,
+      id: matchInstanceIdRef.current,
       mode: settings.mode,
       opponent,
       playerColor: isAI ? settings.playerColor : 'w',
@@ -421,43 +503,72 @@ export default function App() {
       playedAt: Date.now(),
     };
 
-    setProfile((prev) => {
-      const nextRecentMatches = [matchEntry, ...(prev.recentMatches ?? [])].slice(
-        0,
-        MAX_RECENT_MATCHES
-      );
+    const prevProfile = profileRef.current;
+    const nextRecentMatches = [matchEntry, ...(prevProfile.recentMatches ?? [])].slice(
+      0,
+      MAX_RECENT_MATCHES
+    );
 
-      if (!isAI) {
-        return {
-          ...prev,
+    const nextProfile: PlayerProfile = !isAI
+      ? {
+          ...prevProfile,
           recentMatches: nextRecentMatches,
-        };
-      }
+        }
+      : (() => {
+          const nextWins = prevProfile.wins + (didWin ? 1 : 0);
+          const nextDraws = prevProfile.draws + (isDraw ? 1 : 0);
+          const nextLosses = prevProfile.losses + (!didWin && !isDraw ? 1 : 0);
+          const nextRating = Math.max(800, prevProfile.rating + ratingDelta);
+          const nextLevel = Math.max(
+            prevProfile.level,
+            1 + Math.floor((nextWins * 2 + nextDraws) / 3)
+          );
+          return {
+            ...prevProfile,
+            level: nextLevel,
+            rating: nextRating,
+            wins: nextWins,
+            draws: nextDraws,
+            losses: nextLosses,
+            recentMatches: nextRecentMatches,
+          };
+        })();
 
-      const nextWins = prev.wins + (didWin ? 1 : 0);
-      const nextDraws = prev.draws + (isDraw ? 1 : 0);
-      const nextLosses = prev.losses + (!didWin && !isDraw ? 1 : 0);
-      const nextRating = Math.max(800, prev.rating + ratingDelta);
-      const nextLevel = Math.max(prev.level, 1 + Math.floor((nextWins * 2 + nextDraws) / 3));
-      return {
-        ...prev,
-        level: nextLevel,
-        rating: nextRating,
-        wins: nextWins,
-        draws: nextDraws,
-        losses: nextLosses,
-        recentMatches: nextRecentMatches,
-      };
-    });
+    const { nextState, summary } = applyMatchRewardToState(
+      progressionRef.current,
+      {
+        matchId: matchInstanceIdRef.current,
+        mode: settings.mode,
+        difficulty: settings.difficulty,
+        playerColor: settings.playerColor,
+        status,
+      },
+      nextProfile,
+      Date.now(),
+      prevProfile
+    );
+
+    setProfile(nextProfile);
+    setProgression(nextState);
+    setLastMatchReward(summary);
+
+    if (summary.eligible && (summary.totalCoins > 0 || summary.totalGems > 0)) {
+      audioManager.playRewardCollect();
+      const subtitle =
+        summary.newlyReadyMilestones.length > 0
+          ? `Milestone Ready: ${summary.newlyReadyMilestones[0]}`
+          : summary.firstTimeBonuses.length > 0
+          ? summary.firstTimeBonuses[0].label
+          : 'Added to your Royal Treasury';
+      showRewardBanner('Battle Rewards Earned', subtitle, summary.totalCoins, summary.totalGems);
+    }
   }, [
-    status.isGameOver,
-    status.winner,
-    status.reason,
-    status.moveCount,
+    status,
     pendingAnimation,
     settings.mode,
     settings.playerColor,
     settings.difficulty,
+    showRewardBanner,
   ]);
 
   // Sync independent audio volumes & mute state (paused while SettingsModal live-previews)
@@ -542,6 +653,7 @@ export default function App() {
   const backStateRef = useRef({
     screen,
     mode: settings.mode,
+    treasuryOpen,
     howToPlayOpen,
     settingsOpen,
     profileOpen,
@@ -553,6 +665,7 @@ export default function App() {
   backStateRef.current = {
     screen,
     mode: settings.mode,
+    treasuryOpen,
     howToPlayOpen,
     settingsOpen,
     profileOpen,
@@ -572,6 +685,11 @@ export default function App() {
     let listenerHandle: { remove: () => Promise<void> } | null = null;
     void CapacitorApp.addListener('backButton', () => {
       const st = backStateRef.current;
+      if (st.treasuryOpen) {
+        audioManager.playModalClose();
+        setTreasuryOpen(false);
+        return;
+      }
       if (st.profileOpen) {
         audioManager.playModalClose();
         setProfileOpen(false);
@@ -698,6 +816,7 @@ export default function App() {
       setPendingPromotion(null);
 
       const payload = moveToAnimationPayload(move);
+      payload.moveIndex = chess.history().length;
       pendingPromotionMoveRef.current = Boolean(payload.promotion);
       if (!payload.captured) {
         audioManager.playPieceMove(settings.characterSet, payload.piece);
@@ -716,38 +835,58 @@ export default function App() {
       pendingPromotionMoveRef.current = false;
 
       const chess = chessRef.current;
+      const activeSettings = settingsRef.current;
+      const activeForcedEnd = forcedEndRef.current;
       setPendingAnimation(null);
-      refreshReactFromChess(forcedEnd);
+      refreshReactFromChess(activeForcedEnd);
 
       if (wasPromotion) {
         audioManager.playPromotion();
       }
 
       if (chess.isGameOver()) {
-        const nextStatus = buildStatus(chess, forcedEnd);
+        const nextStatus = buildStatus(chess, activeForcedEnd);
         const isDraw = nextStatus.winner === 'draw';
         const isHumanWin =
-          settings.mode === 'pvp' || nextStatus.winner === settings.playerColor;
+          activeSettings.mode === 'pvp' || nextStatus.winner === activeSettings.playerColor;
+        const targetKingSquare =
+          nextStatus.winner === 'w' || nextStatus.winner === 'b'
+            ? findKingSquare(chess, nextStatus.winner === 'w' ? 'b' : 'w')
+            : findKingSquare(chess, chess.turn() as PieceColor);
+
         if (nextStatus.reason === 'checkmate' || chess.isCheckmate()) {
           if (checkmateAnnouncedEpochRef.current !== matchEpochRef.current) {
             checkmateAnnouncedEpochRef.current = matchEpochRef.current;
             audioManager.playCheckmateAnnouncement(isHumanWin);
+            sceneControllerRef.current?.triggerOutcomeEffect(
+              isHumanWin ? 'checkmate' : 'defeat',
+              targetKingSquare
+            );
           }
         } else if (isDraw) {
           audioManager.playDraw();
+          sceneControllerRef.current?.triggerOutcomeEffect('draw', targetKingSquare);
         } else {
           audioManager.playGameOver(isHumanWin ? 'victory' : 'defeat');
+          sceneControllerRef.current?.triggerOutcomeEffect(
+            isHumanWin ? 'victory' : 'defeat',
+            targetKingSquare
+          );
         }
         setDismissedGameOver(false);
       } else if (chess.inCheck()) {
         audioManager.playCheckAnnouncement();
+        const chkSquare = findCheckSquare(chess);
+        if (chkSquare) {
+          sceneControllerRef.current?.triggerCheckEffect(chkSquare);
+        }
       }
 
-      if (settings.mode === 'pvp' && settings.autoFlipPvP && !chess.isGameOver()) {
+      if (activeSettings.mode === 'pvp' && activeSettings.autoFlipPvP && !chess.isGameOver()) {
         sceneControllerRef.current?.resetCamera(chess.turn() as PieceColor);
       }
     },
-    [refreshReactFromChess, settings, forcedEnd]
+    [refreshReactFromChess]
   );
 
   const handleSquareTap = useCallback(
@@ -900,12 +1039,12 @@ export default function App() {
       setForcedEnd(endState);
       setStatus(buildStatus(chessRef.current, endState));
       setDismissedGameOver(false);
-      audioManager.playGameOver(
-        settings.mode === 'ai'
-          ? settings.playerColor === winner
-            ? 'victory'
-            : 'defeat'
-          : 'victory'
+      const isHumanWin = settings.mode === 'ai' ? settings.playerColor === winner : true;
+      const loserKingSq = findKingSquare(chessRef.current, winner === 'w' ? 'b' : 'w');
+      audioManager.playGameOver(isHumanWin ? 'victory' : 'defeat');
+      sceneControllerRef.current?.triggerOutcomeEffect(
+        isHumanWin ? 'victory' : 'defeat',
+        loserKingSq
       );
     },
     [settings.mode, settings.playerColor]
@@ -913,14 +1052,29 @@ export default function App() {
 
   const startFreshMatch = useCallback(
     (nextSettings: GameSettings) => {
+      const safeCharacterSet = isCharacterSetUnlocked(
+        progressionRef.current.unlockedIds,
+        nextSettings.characterSet
+      )
+        ? nextSettings.characterSet
+        : 'human';
+      const sanitizedSettings =
+        safeCharacterSet === nextSettings.characterSet
+          ? nextSettings
+          : { ...nextSettings, characterSet: safeCharacterSet };
+      if (sanitizedSettings !== nextSettings) {
+        setSettings(sanitizedSettings);
+      }
+
       const epoch = ++matchEpochRef.current;
+      matchInstanceIdRef.current = `match-${Date.now()}-${epoch}`;
       checkmateAnnouncedEpochRef.current = -1;
       pendingPromotionMoveRef.current = false;
       aiAbortRef.current?.abort();
       aiAbortRef.current = null;
       window.clearTimeout(camResetTimerRef.current);
       audioManager.stopAllCombatSfx();
-      audioManager.preloadSetAsync(nextSettings.characterSet);
+      audioManager.preloadSetAsync(sanitizedSettings.characterSet);
 
       const freshChess = new Chess();
       chessRef.current = freshChess;
@@ -931,6 +1085,7 @@ export default function App() {
       setSelectedSquare(null);
       setIsAIThinking(false);
       setAiMessage(null);
+      setLastMatchReward(null);
       forcedEndRef.current = null;
       setForcedEnd(null);
       setIsPaused(false);
@@ -989,6 +1144,8 @@ export default function App() {
     setStatus(buildStatus(chessRef.current, endState));
     setDismissedGameOver(false);
     audioManager.playGameOver('defeat');
+    const loserKingSq = findKingSquare(chessRef.current, loser);
+    sceneControllerRef.current?.triggerOutcomeEffect('defeat', loserKingSq);
   }, [status.isGameOver, status.turn, pendingAnimation, settings.mode, settings.playerColor]);
 
   const handleUndo = useCallback(() => {
@@ -1016,6 +1173,7 @@ export default function App() {
     setDismissedGameOver(false);
     checkmateAnnouncedEpochRef.current = -1;
     pendingPromotionMoveRef.current = false;
+    sceneControllerRef.current?.rollbackAftermathToMove(chess.history().length);
     refreshReactFromChess(null);
     audioManager.playUndo();
   }, [
@@ -1095,6 +1253,87 @@ export default function App() {
     [settings.characterSet]
   );
 
+  const handleOpenTreasury = useCallback(() => {
+    audioManager.playModalOpen();
+    setTreasuryOpen(true);
+  }, []);
+
+  const handleCloseTreasury = useCallback(() => {
+    audioManager.playModalClose();
+    setTreasuryOpen(false);
+  }, []);
+
+  const handleClaimMilestone = useCallback(
+    (milestoneId: string) => {
+      const result = claimMilestoneReward(
+        progressionRef.current,
+        profileRef.current,
+        milestoneId
+      );
+      if (!result.claimed) return;
+      setProgression(result.nextState);
+      audioManager.playRewardCollect();
+      showRewardBanner(
+        'Milestone Claimed',
+        result.title,
+        result.rewardCoins,
+        result.rewardGems
+      );
+    },
+    [showRewardBanner]
+  );
+
+  const handleUnlockItem = useCallback(
+    (itemId: string) => {
+      const res = unlockCatalogItem(progressionRef.current, itemId);
+      if (!res.success || !res.unlockedItem) return;
+      setProgression(res.nextState);
+      audioManager.playUnlockSuccess();
+      showRewardBanner('Unlocked in Armory', res.unlockedItem.name);
+    },
+    [showRewardBanner]
+  );
+
+  const handleUnlockCharacterSet = useCallback(
+    (setId: CharacterSetId) => {
+      const itemId = getCharacterSetUnlockId(setId);
+      const res = unlockCatalogItem(progressionRef.current, itemId);
+      if (!res.success || !res.unlockedItem) return;
+      setProgression(res.nextState);
+      setSettings((s) => ({ ...s, characterSet: setId }));
+      audioManager.playUnlockSuccess();
+      showRewardBanner('Kingdom Unlocked', `${res.unlockedItem.name} equipped`);
+    },
+    [showRewardBanner]
+  );
+
+  const handleEquipCharacterSet = useCallback((setId: CharacterSetId) => {
+    if (!isCharacterSetUnlocked(progressionRef.current.unlockedIds, setId)) return;
+    audioManager.playKingdomSelect(setId);
+    setSettings((s) => ({ ...s, characterSet: setId }));
+  }, []);
+
+  const handleEquipPieceSkin = useCallback((skinId: PieceSkinId) => {
+    if (!isPieceSkinUnlocked(progressionRef.current.unlockedIds, skinId)) return;
+    setProgression((p) => ({ ...p, equippedPieceSkin: skinId }));
+    setSettings((s) => ({ ...s, pieceSkin: skinId }));
+  }, []);
+
+  const handleEquipBoardTheme = useCallback((themeId: BoardThemeId) => {
+    if (!isBoardThemeUnlocked(progressionRef.current.unlockedIds, themeId)) return;
+    setProgression((p) => ({ ...p, equippedBoardTheme: themeId }));
+  }, []);
+
+  const handleEquipAvatar = useCallback((avatarId: CommanderAvatarId) => {
+    if (!isAvatarUnlocked(progressionRef.current.unlockedIds, avatarId)) return;
+    setProfile((p) => ({ ...p, avatarId }));
+  }, []);
+
+  const claimableRewardsCount = useMemo(
+    () => countClaimableMilestones(profile, progression),
+    [profile, progression]
+  );
+
   const handleOpenProfile = useCallback(() => {
     audioManager.playModalOpen();
     setProfileOpen(true);
@@ -1134,6 +1373,7 @@ export default function App() {
   }, []);
 
   const handleSelectSet = useCallback((characterSet: CharacterSetId) => {
+    if (!isCharacterSetUnlocked(progressionRef.current.unlockedIds, characterSet)) return;
     audioManager.playKingdomSelect(characterSet);
     setSettings((s) => ({ ...s, characterSet }));
   }, []);
@@ -1184,7 +1424,10 @@ export default function App() {
         <HomeScreen
           quality={settings.quality}
           profile={profile}
+          wallet={progression.wallet}
+          claimableRewardsCount={claimableRewardsCount}
           onOpenProfile={handleOpenProfile}
+          onOpenTreasury={handleOpenTreasury}
           onStartGame={handleGoModes}
           onOpenModes={handleGoModes}
           onOpenSettings={handleOpenSettings}
@@ -1202,8 +1445,13 @@ export default function App() {
       {screen === 'kingdoms' && (
         <KingdomSelectScreen
           selectedSet={settings.characterSet}
+          pieceSkin={progression.equippedPieceSkin}
+          boardTheme={progression.equippedBoardTheme}
+          unlockedIds={progression.unlockedIds}
+          wallet={progression.wallet}
           quality={settings.quality}
           onSelectSet={handleSelectSet}
+          onUnlockSet={handleUnlockCharacterSet}
           onContinue={handleKingdomContinue}
           onBack={handleGoModes}
         />
@@ -1223,6 +1471,8 @@ export default function App() {
       {screen === 'match-setup' && (
         <MatchSetupScreen
           settings={settings}
+          pieceSkin={progression.equippedPieceSkin}
+          boardTheme={progression.equippedBoardTheme}
           onChangeTimeControl={(timeControlSeconds) =>
             setSettings((s) => ({ ...s, timeControlSeconds }))
           }
@@ -1245,6 +1495,8 @@ export default function App() {
             showCoordinates={settings.showCoordinates}
             quality={settings.quality}
             characterSet={settings.characterSet}
+            pieceSkin={progression.equippedPieceSkin}
+            boardTheme={progression.equippedBoardTheme}
             initialSide={settings.mode === 'ai' ? settings.playerColor : 'w'}
             onSquareTap={handleSquareTap}
             onAnimationComplete={handleAnimationComplete}
@@ -1307,6 +1559,8 @@ export default function App() {
             <GameOverModal
               status={status}
               settings={settings}
+              rewardSummary={lastMatchReward}
+              onOpenTreasury={handleOpenTreasury}
               onRematch={handleRestart}
               onMainMenu={handleReturnToMenu}
               onInspectBoard={handleInspectBoard}
@@ -1319,6 +1573,11 @@ export default function App() {
         <SettingsModal
           settings={settings}
           inGame={screen === 'playing'}
+          unlockedIds={progression.unlockedIds}
+          pieceSkin={progression.equippedPieceSkin}
+          boardTheme={progression.equippedBoardTheme}
+          onChangePieceSkin={handleEquipPieceSkin}
+          onChangeBoardTheme={handleEquipBoardTheme}
           onApplyAndStart={(next) => {
             setSettings(next);
             startFreshMatch(next);
@@ -1333,10 +1592,29 @@ export default function App() {
       {profileOpen && (
         <ProfileModal
           profile={profile}
+          wallet={progression.wallet}
+          unlockedIds={progression.unlockedIds}
           onUpdateProfile={setProfile}
           onClose={handleCloseProfile}
         />
       )}
+
+      {treasuryOpen && (
+        <TreasuryModal
+          progression={progression}
+          profile={profile}
+          settings={settings}
+          onClaimMilestone={handleClaimMilestone}
+          onUnlockItem={handleUnlockItem}
+          onEquipCharacterSet={handleEquipCharacterSet}
+          onEquipPieceSkin={handleEquipPieceSkin}
+          onEquipBoardTheme={handleEquipBoardTheme}
+          onEquipAvatar={handleEquipAvatar}
+          onClose={handleCloseTreasury}
+        />
+      )}
+
+      <RewardToast notice={rewardToast} onDismiss={() => setRewardToast(null)} />
 
       {screen !== 'home' && <DevPerfOverlay />}
     </main>

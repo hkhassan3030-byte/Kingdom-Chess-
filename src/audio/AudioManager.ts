@@ -1004,6 +1004,12 @@ export class AudioManager {
         ? 1.08
         : setId === 'titan'
         ? 1.06
+        : setId === 'frostguard'
+        ? 1.04
+        : setId === 'sylvan'
+        ? 0.97
+        : setId === 'storm'
+        ? 1.12
         : 1.0;
 
     for (let i = 0; i < len; i++) {
@@ -1130,6 +1136,16 @@ export class AudioManager {
       } else if (setId === 'celestial') {
         // Clean crisp high air sheen
         setLayer = bpB * 0.2 * env;
+      } else if (setId === 'frostguard') {
+        // Glacial crystalline frost hiss
+        const iceGlint = Math.abs(noise) > 0.92 ? hpPrev * 0.42 : 0;
+        setLayer = (bpB * 0.24 + iceGlint) * env;
+      } else if (setId === 'sylvan') {
+        // Brisk canopy wind rush
+        setLayer = (bpA * 0.22 + lpA * 0.16) * env;
+      } else if (setId === 'storm') {
+        // Sharp high-velocity tempest shear
+        setLayer = (hpPrev * 0.26 + bpB * 0.18) * env;
       }
 
       const whoosh = (bpA * 0.72 + bpB * edgeMix + hpPrev * 0.18) * env;
@@ -1173,6 +1189,12 @@ export class AudioManager {
         ? 1.11
         : setId === 'titan'
         ? 1.07
+        : setId === 'frostguard'
+        ? 1.06
+        : setId === 'sylvan'
+        ? 0.95
+        : setId === 'storm'
+        ? 1.13
         : 1.0;
 
     // Inharmonic paired steel/wood/armor modes (paired detuned modes eliminate flat sine tone!)
@@ -1359,6 +1381,17 @@ export class AudioManager {
       } else if (setId === 'celestial') {
         setFlavor =
           Math.sin(2 * Math.PI * 1940 * t) * Math.exp(-t * 16) * 0.12;
+      } else if (setId === 'frostguard') {
+        const shatter = Math.sin(2 * Math.PI * 2460 * t) * Math.exp(-t * 22) * 0.14;
+        const iceCrack = Math.abs(n) > 0.89 && t < 0.08 ? hiCrunch * 0.42 : 0;
+        setFlavor = shatter + iceCrack;
+      } else if (setId === 'sylvan') {
+        const timber = Math.sin(2 * Math.PI * 340 * t) * Math.exp(-t * 24) * 0.16;
+        setFlavor = timber + (midNoise - lowNoise) * Math.exp(-t * 20) * 0.22;
+      } else if (setId === 'storm') {
+        const arc = Math.abs(n) > 0.88 && t < 0.11 ? hiCrunch * 0.48 : 0;
+        const thunderSub = Math.sin(2 * Math.PI * 68 * t) * Math.exp(-t * 11) * 0.22;
+        setFlavor = arc + thunderSub;
       }
 
       let followThrough = 0;
@@ -1400,7 +1433,18 @@ export class AudioManager {
     const buf = ctx.createBuffer(1, len, sr);
     const data = buf.getChannelData(0);
 
-    const setPitch = setId === 'shadow' ? 0.89 : setId === 'celestial' ? 1.09 : 1.0;
+    const setPitch =
+      setId === 'shadow'
+        ? 0.89
+        : setId === 'celestial'
+        ? 1.09
+        : setId === 'frostguard'
+        ? 1.05
+        : setId === 'sylvan'
+        ? 0.96
+        : setId === 'storm'
+        ? 1.08
+        : 1.0;
     const pitch = (1 / Math.max(0.75, defenderWeight)) * [0.96, 1.0, 1.05][vIdx] * setPitch;
     const isShield = blockClass === 'shield';
     const partials = isShield
@@ -1463,7 +1507,19 @@ export class AudioManager {
     const data = buf.getChannelData(0);
 
     const rootFreq =
-      setId === 'inferno' ? 132 : setId === 'shadow' ? 108 : setId === 'celestial' ? 196 : 164;
+      setId === 'inferno'
+        ? 132
+        : setId === 'shadow'
+        ? 108
+        : setId === 'celestial'
+        ? 196
+        : setId === 'frostguard'
+        ? 212
+        : setId === 'sylvan'
+        ? 176
+        : setId === 'storm'
+        ? 188
+        : 164;
 
     let lp = 0;
     let bp = 0;
@@ -1677,7 +1733,18 @@ export class AudioManager {
     const data = buf.getChannelData(0);
 
     const taps = [0.004, 0.088 + vIdx * 0.008];
-    const pitchScale = setId === 'inferno' ? 0.9 : setId === 'celestial' ? 1.07 : 1.0;
+    const pitchScale =
+      setId === 'inferno'
+        ? 0.9
+        : setId === 'celestial'
+        ? 1.07
+        : setId === 'frostguard'
+        ? 1.04
+        : setId === 'sylvan'
+        ? 0.96
+        : setId === 'storm'
+        ? 1.06
+        : 1.0;
     const tapFreqs = [(340 + vIdx * 22) * pitchScale, (295 + vIdx * 18) * pitchScale];
 
     let lp = 0;
@@ -2146,6 +2213,12 @@ export class AudioManager {
         ? [220.0, 329.63, 440.0]
         : setId === 'shadow'
         ? [246.94, 293.66, 440.0]
+        : setId === 'frostguard'
+        ? [523.25, 783.99, 1046.5]
+        : setId === 'sylvan'
+        ? [392.0, 493.88, 587.33]
+        : setId === 'storm'
+        ? [329.63, 493.88, 739.99]
         : [392.0, 587.33, 783.99];
 
     let lp = 0;
@@ -2209,6 +2282,43 @@ export class AudioManager {
     }
 
     normalizeBuffer(data, 0.62);
+    return buf;
+  }
+
+  private bakeRewardBuffer(ctx: AudioContext, isUnlock: boolean): AudioBuffer {
+    const sr = ctx.sampleRate;
+    const rng = makeRng(isUnlock ? 8111 : 7907);
+    const dur = isUnlock ? 0.56 : 0.44;
+    const len = Math.floor(sr * dur);
+    const buf = ctx.createBuffer(1, len, sr);
+    const data = buf.getChannelData(0);
+
+    const freqs = isUnlock
+      ? [392.0, 493.88, 587.33, 783.99]
+      : [587.33, 739.99, 880.0, 1174.66];
+    const step = isUnlock ? 0.065 : 0.052;
+
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      const n = rng();
+      lp = lp * 0.78 + n * 0.22;
+      let s = 0;
+      for (let k = 0; k < freqs.length; k++) {
+        const start = k * step;
+        if (t >= start) {
+          const dt = t - start;
+          s +=
+            (Math.sin(2 * Math.PI * freqs[k] * dt) * 0.46 +
+              Math.sin(2 * Math.PI * freqs[k] * 2 * dt) * 0.16) *
+            Math.exp(-dt * (isUnlock ? 6.5 : 8.5));
+        }
+      }
+      data[i] = s + (n - lp) * Math.exp(-t * 32) * 0.08;
+    }
+
+    this.applyCourtyardReflections(data, sr, 0.24, 0.85);
+    normalizeBuffer(data, 0.7);
     return buf;
   }
 
@@ -2636,6 +2746,28 @@ export class AudioManager {
       this.bakeGameOverChordBuffer(ctx, outcome)
     );
     this.playCachedBuffer(ctx, buf, 0.34, 1.0, 1, false);
+  }
+
+  public playRewardCollect() {
+    if (!this.canPlayWithPriority('ui:reward:collect', 140, 3)) return;
+    if (!this.preloadedSet) this.preload();
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const buf = this.getOrCreateBuffer(ctx, 'ui:reward:collect', () =>
+      this.bakeRewardBuffer(ctx, false)
+    );
+    this.playCachedBuffer(ctx, buf, 0.26, 1.0, 3, false);
+  }
+
+  public playUnlockSuccess() {
+    if (!this.canPlayWithPriority('ui:reward:unlock', 180, 2)) return;
+    if (!this.preloadedSet) this.preload();
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const buf = this.getOrCreateBuffer(ctx, 'ui:reward:unlock', () =>
+      this.bakeRewardBuffer(ctx, true)
+    );
+    this.playCachedBuffer(ctx, buf, 0.3, 1.0, 2, false);
   }
 
   public cleanup() {

@@ -4,7 +4,30 @@ export type GameMode = 'ai' | 'pvp';
 export type AIDifficulty = 'easy' | 'normal' | 'hard' | 'expert' | 'grandmaster';
 export type TimerOption = 0 | 180 | 300 | 600;
 export type GraphicsQuality = 'high' | 'balanced';
-export type CharacterSetId = 'human' | 'titan' | 'inferno' | 'shadow' | 'celestial';
+export type CharacterSetId =
+  | 'human'
+  | 'titan'
+  | 'inferno'
+  | 'shadow'
+  | 'celestial'
+  | 'frostguard'
+  | 'sylvan'
+  | 'storm';
+export type PieceSkinId =
+  | 'royal-standard'
+  | 'gilded-champion'
+  | 'ivory-marble'
+  | 'runed-cobalt'
+  | 'obsidian-crimson';
+export type BoardThemeId =
+  | 'classic-citadel'
+  | 'emerald-bastion'
+  | 'obsidian-forge'
+  | 'astral-sanctuary'
+  | 'frostpeak-glacier'
+  | 'sylvan-glade'
+  | 'storm-spires';
+export type CommanderAvatarId = 'crown' | 'knight' | 'sword' | 'shield' | 'flame' | 'astral';
 export type ScreenView = 'home' | 'modes' | 'kingdoms' | 'ai-setup' | 'match-setup' | 'playing';
 
 export interface GameSettings {
@@ -13,6 +36,8 @@ export interface GameSettings {
   playerColor: PieceColor;
   timeControlSeconds: TimerOption;
   characterSet: CharacterSetId;
+  boardTheme?: BoardThemeId;
+  pieceSkin?: PieceSkinId;
   soundEnabled: boolean;
   musicEnabled: boolean;
   musicVolume: number;
@@ -40,7 +65,7 @@ export interface MatchHistoryEntry {
 
 export interface PlayerProfile {
   name: string;
-  avatarId: 'crown' | 'knight' | 'sword' | 'shield';
+  avatarId: CommanderAvatarId;
   level: number;
   rating: number;
   wins: number;
@@ -139,6 +164,7 @@ export interface MoveAnimationPayload {
   capturedSquare?: string;
   promotion?: PieceType;
   san: string;
+  moveIndex?: number;
   isCastle?: 'k' | 'q';
   rookFrom?: string;
   rookTo?: string;

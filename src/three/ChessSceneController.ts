@@ -15,6 +15,8 @@ import {
   type CharacterRig,
 } from './createCharacterPieces';
 import { CharacterGLTFProvider } from './characterAssetLoader';
+import { BOARD_ARENAS } from './arenaPresets';
+import { CHARACTER_SETS } from './characterSets';
 import { createSceneMaterialBank, type SceneMaterialBank } from './materials';
 import {
   CombatEffectsManager,
@@ -24,14 +26,17 @@ import {
   type CombatDuelContext,
   type CombatSoundEvent,
 } from './combatChoreography';
+import { BattlefieldAftermathManager } from './battlefieldAftermath';
 import { recordFrameMetrics } from '../utils/devPerfMonitor';
-import { isSoftwareGlRenderer } from '../utils/webglDetect';
+import { isLowTierDevice, isSoftwareGlRenderer } from '../utils/webglDetect';
 import type {
   BoardPiece,
+  BoardThemeId,
   CharacterSetId,
   GraphicsQuality,
   MoveAnimationPayload,
   PieceColor,
+  PieceSkinId,
   PieceType,
 } from '../types/chess';
 
@@ -47,6 +52,165 @@ const _flameDummy = new THREE.Object3D();
 const BOARD_CENTER_TARGET = new THREE.Vector3(0, 0.12, 0);
 const CAMERA_PITCH_RAD = THREE.MathUtils.degToRad(68); // Higher 68° top-down isometric view (65–75°)
 const CAMERA_YAW_RAD = THREE.MathUtils.degToRad(8); // Slight 8° isometric angle toward the battlefield
+
+const _camRightPan = new THREE.Vector3();
+const _camForwardPan = new THREE.Vector3();
+const _worldUpAxis = new THREE.Vector3(0, 1, 0);
+
+export interface CameraPanBounds {
+  maxX: number;
+  maxZ: number;
+}
+
+/**
+ * Converts screen-space pointer drag pixels into ground-plane (XZ) camera pan deltas
+ * matching the active camera orientation with zero pitch drift.
+ */
+export function screenDeltaToGroundPan(
+  dxPixels: number,
+  dyPixels: number,
+  cameraMatrixWorld: THREE.Matrix4,
+  fovDeg: number,
+  distance: number,
+  viewportHeight: number,
+  out: { x: number; z: number }
+): { x: number; z: number } {
+  const safeHeight = Math.max(1, viewportHeight);
+  const worldPerPixel =
+    (2 * distance * Math.tan(THREE.MathUtils.degToRad(fovDeg * 0.5))) / safeHeight;
+
+  _camRightPan.setFromMatrixColumn(cameraMatrixWorld, 0).setY(0);
+  if (_camRightPan.lengthSq() > 1e-6) {
+    _camRightPan.normalize();
+  } else {
+    _camRightPan.set(1, 0, 0);
+  }
+
+  _camForwardPan.crossVectors(_worldUpAxis, _camRightPan);
+  if (_camForwardPan.lengthSq() > 1e-6) {
+    _camForwardPan.normalize();
+  } else {
+    _camForwardPan.set(0, 0, -1);
+  }
+
+  const pitchComp = 1 / Math.max(0.5, Math.sin(CAMERA_PITCH_RAD));
+  const moveRight = -dxPixels * worldPerPixel;
+  const moveForward = dyPixels * worldPerPixel * pitchComp;
+
+  out.x = _camRightPan.x * moveRight + _camForwardPan.x * moveForward;
+  out.z = _camRightPan.z * moveRight + _camForwardPan.z * moveForward;
+  return out;
+}
+
+/**
+ * Computes zoom-aware horizontal and vertical pan limits over the battlefield.
+ * Keeps the chessboard centered at default/zoomed-out framing and expands smoothly
+ * across the 8x8 board and flanking Graveyard Sanctuaries as the player zooms in.
+ */
+export function computeCameraPanBounds(
+  distance: number,
+  defaultDist: number,
+  minDist: number,
+  maxDist: number
+): CameraPanBounds {
+  if (distance <= defaultDist) {
+    const span = Math.max(0.01, defaultDist - minDist);
+    const zoomInT = THREE.MathUtils.clamp((defaultDist - distance) / span, 0, 1);
+    return {
+      maxX: THREE.MathUtils.lerp(1.6, 7.35, zoomInT),
+      maxZ: THREE.MathUtils.lerp(1.2, 5.35, zoomInT),
+    };
+  }
+  const outSpan = Math.max(0.01, maxDist - defaultDist);
+  const zoomOutT = THREE.MathUtils.clamp((distance - defaultDist) / outSpan, 0, 1);
+  return {
+    maxX: THREE.MathUtils.lerp(1.6, 0.35, zoomOutT),
+    maxZ: THREE.MathUtils.lerp(1.2, 0.25, zoomOutT),
+  };
+}
+
+export type AdaptivePerfTier = 0 | 1 | 2;
+
+export interface AdaptivePerfState {
+  tier: AdaptivePerfTier;
+  emaFrameMs: number;
+  slowSustainSec: number;
+  fastSustainSec: number;
+  warmupFrames: number;
+}
+
+export function createAdaptivePerfState(): AdaptivePerfState {
+  return {
+    tier: 0,
+    emaFrameMs: 16.67,
+    slowSustainSec: 0,
+    fastSustainSec: 0,
+    warmupFrames: 10,
+  };
+}
+
+/**
+ * Hysteresis-driven adaptive frame-budget controller.
+ * Scales back non-critical ambient frequency, combat particle counts, and mid-duel
+ * shadow updates only under sustained slow frames, ignoring brief stalls (> 48ms)
+ * and recovering smoothly without backbuffer thrashing.
+ */
+export function stepAdaptivePerfTier(
+  state: AdaptivePerfState,
+  frameMs: number,
+  dtSec: number
+): AdaptivePerfTier {
+  if (state.warmupFrames > 0) {
+    state.warmupFrames--;
+    return state.tier;
+  }
+  if (!Number.isFinite(frameMs) || frameMs <= 0 || frameMs > 48) {
+    return state.tier;
+  }
+  const clampedDt = Math.min(Math.max(dtSec, 0), 0.05);
+  state.emaFrameMs = state.emaFrameMs * 0.9 + frameMs * 0.1;
+
+  if (state.tier === 0) {
+    if (state.emaFrameMs > 26) {
+      state.slowSustainSec += clampedDt;
+      state.fastSustainSec = 0;
+      if (state.slowSustainSec >= 1.5) {
+        state.tier = 1;
+        state.slowSustainSec = 0;
+      }
+    } else {
+      state.slowSustainSec = Math.max(0, state.slowSustainSec - clampedDt * 0.5);
+    }
+  } else if (state.tier === 1) {
+    if (state.emaFrameMs > 36) {
+      state.slowSustainSec += clampedDt;
+      state.fastSustainSec = 0;
+      if (state.slowSustainSec >= 2.0) {
+        state.tier = 2;
+        state.slowSustainSec = 0;
+      }
+    } else if (state.emaFrameMs < 19) {
+      state.fastSustainSec += clampedDt;
+      state.slowSustainSec = 0;
+      if (state.fastSustainSec >= 3.5) {
+        state.tier = 0;
+        state.fastSustainSec = 0;
+      }
+    } else {
+      state.slowSustainSec = Math.max(0, state.slowSustainSec - clampedDt * 0.5);
+      state.fastSustainSec = Math.max(0, state.fastSustainSec - clampedDt * 0.5);
+    }
+  } else if (state.emaFrameMs < 24) {
+    state.fastSustainSec += clampedDt;
+    if (state.fastSustainSec >= 3.5) {
+      state.tier = 1;
+      state.fastSustainSec = 0;
+    }
+  } else {
+    state.fastSustainSec = Math.max(0, state.fastSustainSec - clampedDt * 0.5);
+  }
+  return state.tier;
+}
 
 interface KingdomArenaTheme {
   bg: number;
@@ -110,9 +274,40 @@ const KINGDOM_ARENA_THEMES: Record<CharacterSetId, KingdomArenaTheme> = {
     flame: 0x7dd3fc,
     ember: 0x0ea5e9,
   },
+  frostguard: {
+    bg: 0x0e1c2b,
+    fog: 0x13263b,
+    key: 0xe2f5ff,
+    fillRim: 0x99f6e4,
+    trim: 0x99d9f2,
+    moat: 0x0b2336,
+    flame: 0x67e8f9,
+    ember: 0x06b6d4,
+  },
+  sylvan: {
+    bg: 0x111d15,
+    fog: 0x17261c,
+    key: 0xf2f5dc,
+    fillRim: 0xcbef90,
+    trim: 0xc9a853,
+    moat: 0x0e241b,
+    flame: 0xd9f99d,
+    ember: 0x65a30d,
+  },
+  storm: {
+    bg: 0x11152b,
+    fog: 0x181e3d,
+    key: 0xe3ebff,
+    fillRim: 0xc4b5fd,
+    trim: 0xd9c252,
+    moat: 0x0d1530,
+    flame: 0xa5b4fc,
+    ember: 0x6366f1,
+  },
 };
 
 interface ActiveMoveAnim {
+  moveIndex: number;
   payload: MoveAnimationPayload;
   attacker: CharacterRig;
   defender: CharacterRig | null;
@@ -136,8 +331,11 @@ export class ChessSceneController {
   private camera: THREE.PerspectiveCamera;
   private controls: OrbitControls;
   private isSoftwareGl: boolean;
+  private isLowTierHw: boolean;
   private quality: GraphicsQuality = 'high';
   private characterSet: CharacterSetId = 'human';
+  private pieceSkin: PieceSkinId = 'royal-standard';
+  private boardTheme: BoardThemeId = 'classic-citadel';
   private currentSide: PieceColor = 'w';
   private lastDefaultDist = 24;
   private lastBoardPieces: BoardPiece[] = [];
@@ -153,6 +351,7 @@ export class ChessSceneController {
   private charGeos: CharacterGeometryBank;
   private gltfProvider = new CharacterGLTFProvider();
   private battlefield: BattlefieldRefs;
+  private hemiLight: THREE.HemisphereLight;
   private keyLight: THREE.DirectionalLight;
   private fillRimLight: THREE.DirectionalLight;
   private resizeObserver: ResizeObserver | null = null;
@@ -162,6 +361,7 @@ export class ChessSceneController {
   private piecesGroup = new THREE.Group();
   private highlightsGroup = new THREE.Group();
   private effectsGroup = new THREE.Group();
+  private aftermathGroup = new THREE.Group();
 
   private pieceMap = new Map<string, CharacterRig>();
   private activeRigs: CharacterRig[] = [];
@@ -190,8 +390,15 @@ export class ChessSceneController {
   private reusableMoveAnim: ActiveMoveAnim | null = null;
   private reusableDuelCtx: CombatDuelContext | null = null;
   private shadowsDirty = true;
+  private lastShadowUpdateMs = 0;
   private lastTickStart = 0;
+  private lastFrameTimeMs = 0;
+  private envAccumDt = 0;
+  private adaptivePerf = createAdaptivePerfState();
   private combatEffects: CombatEffectsManager;
+  private aftermath: BattlefieldAftermathManager;
+  private committedCaptureMoves = new Set<number>();
+  private fallbackCaptureSeq = 10000;
 
   // Smooth zoom/focus glide state (maintains fixed viewing direction, zero rotation)
   private cameraGlide: {
@@ -204,12 +411,34 @@ export class ChessSceneController {
     target: new THREE.Vector3(),
   };
 
-  // Raycasting & mobile touch disambiguation
+  // Raycasting & mobile touch / mouse pan disambiguation
   private raycaster = new THREE.Raycaster();
   private pointerNdc = new THREE.Vector2();
-  private pointerDownInfo: { x: number; y: number; time: number; pointerId: number } | null = null;
+  private pointerDownInfo: {
+    x: number;
+    y: number;
+    time: number;
+    pointerId: number;
+    pointerType: string;
+    movedBeyondTap: boolean;
+    startedOnPiece: boolean;
+    startedOnLegalTarget: boolean;
+  } | null = null;
   private activePointers = new Set<number>();
   private lastMultiTouchTime = 0;
+
+  // Low-latency one-finger ground-plane pan state for empty-space touch drags
+  private oneFingerPan = {
+    active: false,
+    pointerId: -1,
+    lastX: 0,
+    lastY: 0,
+    pendingX: 0,
+    pendingZ: 0,
+    velX: 0,
+    velZ: 0,
+  };
+  private _panDeltaTmp = { x: 0, z: 0 };
 
   private onSquareTapCallback: (square: string) => void;
   private onContextLostCallback?: () => void;
@@ -229,16 +458,21 @@ export class ChessSceneController {
       onContextRestored?: () => void;
       initialSide?: PieceColor;
       characterSet?: CharacterSetId;
+      pieceSkin?: PieceSkinId;
+      boardTheme?: BoardThemeId;
     }
   ) {
     this.container = container;
     this.characterSet = options.characterSet ?? 'human';
+    this.pieceSkin = options.pieceSkin ?? 'royal-standard';
+    this.boardTheme = options.boardTheme ?? 'classic-citadel';
     this.onSquareTapCallback = options.onSquareTap;
     this.onCombatSoundCallback = options.onCombatSound;
     this.onContextLostCallback = options.onContextLost;
     this.onContextRestoredCallback = options.onContextRestored;
 
     this.isSoftwareGl = isSoftwareGlRenderer();
+    this.isLowTierHw = isLowTierDevice();
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: !this.isSoftwareGl,
@@ -248,7 +482,7 @@ export class ChessSceneController {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 1.25));
+    this.renderer.setPixelRatio(this.getTargetPixelRatio());
     this.renderer.shadowMap.enabled = !this.isSoftwareGl;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.shadowMap.autoUpdate = false;
@@ -260,6 +494,7 @@ export class ChessSceneController {
     this.renderer.domElement.style.display = 'block';
     this.renderer.domElement.style.width = '100%';
     this.renderer.domElement.style.height = '100%';
+    this.renderer.domElement.style.cursor = 'grab';
     this.renderer.domElement.className = 'touch-canvas';
     container.appendChild(this.renderer.domElement);
 
@@ -277,7 +512,7 @@ export class ChessSceneController {
     this.scene.environmentIntensity = 0.72;
     pmremGenerator.dispose();
 
-    // Fixed Elevated Isometric Camera (68° downward, zero rotation, full 8x8 board visible)
+    // Fixed Elevated Isometric Camera (68° downward, zero rotation, bounded zoom + pan)
     this.camera = new THREE.PerspectiveCamera(44, width / height, 0.8, 95);
     this.currentSide = options.initialSide ?? 'w';
     const { defaultDist, minDist, maxDist } = this.computeCameraDistances();
@@ -285,20 +520,27 @@ export class ChessSceneController {
     this.sceneFog.density = Math.min(0.014, 0.24 / defaultDist);
     this.getBoardCameraPosition(this.currentSide, defaultDist, this.camera.position);
 
-    // OrbitControls configured strictly for Bounded Zoom-Only (Rotation & Pan completely disabled)
+    // OrbitControls configured for Bounded Zoom + Ground-Plane Pan (Rotation strictly disabled)
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.target.copy(BOARD_CENTER_TARGET);
     this.controls.enableDamping = !this.isSoftwareGl;
-    this.controls.dampingFactor = 0.08;
+    this.controls.dampingFactor = 0.18;
     this.controls.enableRotate = false;
-    this.controls.enablePan = false;
+    this.controls.enablePan = true;
+    this.controls.screenSpacePanning = false;
+    this.controls.panSpeed = 1.05;
     this.controls.enableZoom = true;
     this.controls.zoomSpeed = 0.85;
     this.controls.minDistance = minDist;
     this.controls.maxDistance = maxDist;
+    this.controls.mouseButtons = {
+      LEFT: THREE.MOUSE.PAN,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.PAN,
+    };
     this.controls.touches = {
-      ONE: THREE.TOUCH.ROTATE, // Blocked by enableRotate = false; single finger never moves camera
-      TWO: THREE.TOUCH.DOLLY_PAN, // Only dolly/zoom runs because enablePan = false
+      ONE: THREE.TOUCH.ROTATE, // Blocked by enableRotate = false; single finger taps select chess pieces only
+      TWO: THREE.TOUCH.DOLLY_PAN, // Two-finger pinch zoom + two-finger drag pan
     };
 
     this.controls.addEventListener('start', () => {
@@ -308,14 +550,15 @@ export class ChessSceneController {
     });
 
     // Optimized 3-Light Rig for Mobile GPU (Hemisphere + Shadow Key + Balanced Back/Fill Rim)
-    const hemi = new THREE.HemisphereLight(0x7c9ad0, 0x2f2622, 1.18);
-    this.scene.add(hemi);
+    this.hemiLight = new THREE.HemisphereLight(0x7c9ad0, 0x2f2622, 1.18);
+    this.scene.add(this.hemiLight);
 
     this.keyLight = new THREE.DirectionalLight(0xcce0ff, 2.0);
     this.keyLight.position.set(10.0, 14.5, 7.5);
     this.keyLight.castShadow = !this.isSoftwareGl;
-    this.keyLight.shadow.mapSize.width = 1024;
-    this.keyLight.shadow.mapSize.height = 1024;
+    const shadowSize = this.isLowTierHw ? 512 : 1024;
+    this.keyLight.shadow.mapSize.width = shadowSize;
+    this.keyLight.shadow.mapSize.height = shadowSize;
     this.keyLight.shadow.camera.near = 2;
     this.keyLight.shadow.camera.far = 34;
     const d = 5.8;
@@ -333,14 +576,25 @@ export class ChessSceneController {
 
     // Build Battlefield, Material Bank, Character Geo Bank
     this.materials = createSceneMaterialBank(this.renderer, this.characterSet);
+    if (this.pieceSkin !== 'royal-standard') {
+      this.materials.switchPieceSkin(this.pieceSkin);
+    }
     this.charGeos = createCharacterGeometryBank();
     this.battlefield = createBattlefield(this.materials);
-    this.applyKingdomAtmosphere(this.characterSet);
+    this.applyArenaAtmosphere();
     this.scene.add(this.battlefield.group);
     this.scene.add(this.highlightsGroup);
     this.scene.add(this.piecesGroup);
     this.scene.add(this.effectsGroup);
     this.combatEffects = new CombatEffectsManager(this.effectsGroup);
+    this.scene.add(this.aftermathGroup);
+    this.aftermath = new BattlefieldAftermathManager(
+      this.aftermathGroup,
+      this.renderer,
+      this.charGeos,
+      this.materials
+    );
+    this.syncEffectsMotionAndQuality();
 
     // Highlight rings & discs tuned for clear top-down isometric readability
     const selGeo = new THREE.RingGeometry(0.37, 0.5, 28);
@@ -467,24 +721,92 @@ export class ChessSceneController {
     }
   }
 
-  private applyKingdomAtmosphere(setId: CharacterSetId) {
-    const theme = KINGDOM_ARENA_THEMES[setId];
-    if (this.scene.background instanceof THREE.Color) {
-      this.scene.background.setHex(theme.bg);
+  private applyArenaAtmosphere() {
+    const arena = BOARD_ARENAS[this.boardTheme] ?? BOARD_ARENAS['classic-citadel'];
+    this.materials.switchBoardTheme(this.boardTheme);
+    this.hemiLight.color.setHex(arena.hemiSky);
+    this.hemiLight.groundColor.setHex(arena.hemiGround);
+
+    if (this.boardTheme === 'classic-citadel') {
+      const theme = KINGDOM_ARENA_THEMES[this.characterSet] ?? KINGDOM_ARENA_THEMES.human;
+      if (this.scene.background instanceof THREE.Color) {
+        this.scene.background.setHex(theme.bg);
+      }
+      this.sceneFog.color.setHex(theme.fog);
+      this.keyLight.color.setHex(theme.key);
+      this.fillRimLight.color.setHex(theme.fillRim);
+      this.materials.boardGoldTrim.color.setHex(theme.trim);
+      this.materials.waterMoat.color.setHex(theme.moat);
+      this.materials.brazierFlame.color.setHex(theme.flame);
+      this.materials.brazierEmber.emissive.setHex(theme.ember);
+      const emberMat = this.battlefield.embers.material as THREE.PointsMaterial;
+      emberMat.color.setHex(theme.flame);
+      return;
     }
-    this.sceneFog.color.setHex(theme.fog);
-    this.keyLight.color.setHex(theme.key);
-    this.fillRimLight.color.setHex(theme.fillRim);
-    this.materials.boardGoldTrim.color.setHex(theme.trim);
-    this.materials.waterMoat.color.setHex(theme.moat);
-    this.materials.brazierFlame.color.setHex(theme.flame);
-    this.materials.brazierEmber.emissive.setHex(theme.ember);
+
+    if (this.scene.background instanceof THREE.Color) {
+      this.scene.background.setHex(arena.bg);
+    }
+    this.sceneFog.color.setHex(arena.fog);
+    this.keyLight.color.setHex(arena.keyLight);
+    this.fillRimLight.color.setHex(arena.fillRim);
     const emberMat = this.battlefield.embers.material as THREE.PointsMaterial;
-    emberMat.color.setHex(theme.flame);
+    emberMat.color.setHex(arena.flame);
+  }
+
+  public getAdaptiveTier(): AdaptivePerfTier {
+    return this.adaptivePerf.tier;
+  }
+
+  private syncEffectsMotionAndQuality() {
+    const baseScale = this.quality === 'high' ? 1.0 : 0.65;
+    const tierScale =
+      this.adaptivePerf.tier === 2 ? 0.5 : this.adaptivePerf.tier === 1 ? 0.72 : 1.0;
+    this.combatEffects.setMotionAndQuality(
+      this.prefersReducedMotion,
+      this.quality,
+      baseScale * tierScale
+    );
+    this.aftermath?.setShadowsEnabled(this.quality === 'high' && !this.isSoftwareGl);
+    if (this.controls) {
+      this.controls.enableDamping = !this.isSoftwareGl && !this.prefersReducedMotion;
+    }
+  }
+
+  private handleBloodStain = (
+    x: number,
+    z: number,
+    dirX: number,
+    dirZ: number,
+    intensity: number
+  ) => {
+    if (this.disposed || !this.activeAnim?.isCapture) return;
+    this.aftermath.addImpactStainCluster({
+      moveIndex: this.activeAnim.moveIndex,
+      x,
+      z,
+      dirX,
+      dirZ,
+      intensity,
+    });
+  };
+
+  private commitPendingCapture(anim: ActiveMoveAnim) {
+    if (!anim.isCapture || !anim.defender) return;
+    if (this.committedCaptureMoves.has(anim.moveIndex)) return;
+    this.committedCaptureMoves.add(anim.moveIndex);
+    this.aftermath.addFallenPiece({
+      moveIndex: anim.moveIndex,
+      color: anim.defender.color,
+      type: anim.defender.type,
+      characterSet: this.characterSet,
+    });
+    this.shadowsDirty = true;
   }
 
   private handleMotionChange = (e: MediaQueryListEvent) => {
     this.prefersReducedMotion = e.matches;
+    this.syncEffectsMotionAndQuality();
     if (this.prefersReducedMotion) {
       this.selectedRing.scale.set(1, 1, 1);
       this.selectedRing.updateMatrix();
@@ -497,8 +819,10 @@ export class ChessSceneController {
   private bindEvents() {
     const dom = this.renderer.domElement;
     dom.addEventListener('pointerdown', this.handlePointerDown);
+    dom.addEventListener('pointermove', this.handlePointerMove);
     dom.addEventListener('pointerup', this.handlePointerUp);
     dom.addEventListener('pointercancel', this.handlePointerCancel);
+    dom.addEventListener('wheel', this.handleWheel, { passive: true });
     window.addEventListener('pointerup', this.handleWindowPointerCleanup);
     window.addEventListener('pointercancel', this.handleWindowPointerCleanup);
     window.addEventListener('blur', this.handleWindowBlur);
@@ -514,6 +838,7 @@ export class ChessSceneController {
       this.motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
       this.prefersReducedMotion = this.motionQuery.matches;
       this.motionQuery.addEventListener('change', this.handleMotionChange);
+      this.syncEffectsMotionAndQuality();
     }
   }
 
@@ -530,6 +855,8 @@ export class ChessSceneController {
     } else {
       this.isPausedHidden = false;
       if (!this.disposed && !this.contextLost) {
+        this.adaptivePerf.warmupFrames = 8;
+        this.lastFrameTimeMs = 0;
         this.clock.getDelta();
         this.stopLoop();
         this.tick();
@@ -539,6 +866,13 @@ export class ChessSceneController {
 
   private handleWindowPointerCleanup = (e: PointerEvent) => {
     this.activePointers.delete(e.pointerId);
+    if (e.pointerType === 'mouse') {
+      this.renderer.domElement.style.cursor = 'grab';
+    }
+    if (this.oneFingerPan.pointerId === e.pointerId) {
+      this.oneFingerPan.active = false;
+      this.oneFingerPan.pointerId = -1;
+    }
     if (this.pointerDownInfo?.pointerId === e.pointerId && e.target !== this.renderer.domElement) {
       this.pointerDownInfo = null;
     }
@@ -547,6 +881,8 @@ export class ChessSceneController {
   private handleWindowBlur = () => {
     this.activePointers.clear();
     this.pointerDownInfo = null;
+    this.cancelOneFingerPan();
+    this.renderer.domElement.style.cursor = 'grab';
   };
 
   private handleContextLost = (e: Event) => {
@@ -575,8 +911,8 @@ export class ChessSceneController {
     const tanHalfV = Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
     const tanHalfH = tanHalfV * aspect;
 
-    // 8x8 playable squares span [-4.6, +4.6]; stone coordinate apron spans [-5.775, +5.775]
-    const fitHalfWidth = 6.35;
+    // 8x8 playable squares span [-4.6, +4.6]; stone apron + flanking Graveyard Sanctuaries
+    const fitHalfWidth = 6.85;
     const minFitHalfWidth = 5.2;
     const fitHalfHeight = 7.4;
     const minFitHalfHeight = 6.0;
@@ -607,6 +943,113 @@ export class ChessSceneController {
     return out;
   }
 
+  private cancelOneFingerPan() {
+    this.oneFingerPan.active = false;
+    this.oneFingerPan.pointerId = -1;
+    this.oneFingerPan.pendingX = 0;
+    this.oneFingerPan.pendingZ = 0;
+    this.oneFingerPan.velX = 0;
+    this.oneFingerPan.velZ = 0;
+  }
+
+  private applyWorldPanDelta(dx: number, dz: number) {
+    if (dx === 0 && dz === 0) return;
+    this.controls.target.x += dx;
+    this.controls.target.z += dz;
+    this.camera.position.x += dx;
+    this.camera.position.z += dz;
+  }
+
+  private stepOneFingerPan(dt: number) {
+    const pan = this.oneFingerPan;
+    const directMode = this.prefersReducedMotion || this.isSoftwareGl;
+
+    if (pan.active) {
+      const followAlpha = directMode ? 1 : 1 - Math.exp(-44 * dt);
+      const stepX = pan.pendingX * followAlpha;
+      const stepZ = pan.pendingZ * followAlpha;
+      pan.pendingX -= stepX;
+      pan.pendingZ -= stepZ;
+
+      if (directMode) {
+        pan.velX = 0;
+        pan.velZ = 0;
+      } else if (dt > 0.001) {
+        const instVx = THREE.MathUtils.clamp(stepX / dt, -14, 14);
+        const instVz = THREE.MathUtils.clamp(stepZ / dt, -14, 14);
+        const velAlpha = 1 - Math.exp(-22 * dt);
+        pan.velX = THREE.MathUtils.lerp(pan.velX, instVx, velAlpha);
+        pan.velZ = THREE.MathUtils.lerp(pan.velZ, instVz, velAlpha);
+      }
+
+      this.applyWorldPanDelta(stepX, stepZ);
+      return;
+    }
+
+    // Finger lifted: flush micro residual and glide lightly with damped inertia
+    const flushAlpha = directMode ? 1 : 1 - Math.exp(-32 * dt);
+    const remX = pan.pendingX * flushAlpha;
+    const remZ = pan.pendingZ * flushAlpha;
+    pan.pendingX -= remX;
+    pan.pendingZ -= remZ;
+
+    if (directMode) {
+      this.applyWorldPanDelta(remX, remZ);
+      pan.velX = 0;
+      pan.velZ = 0;
+      return;
+    }
+
+    const coastX = pan.velX * dt;
+    const coastZ = pan.velZ * dt;
+    this.applyWorldPanDelta(remX + coastX, remZ + coastZ);
+
+    const decay = Math.exp(-13 * dt);
+    pan.velX *= decay;
+    pan.velZ *= decay;
+    if (Math.hypot(pan.velX, pan.velZ) < 0.03) {
+      pan.velX = 0;
+      pan.velZ = 0;
+    }
+  }
+
+  private clampCameraPanBounds() {
+    const dist = this.camera.position.distanceTo(this.controls.target);
+    const { maxX, maxZ } = computeCameraPanBounds(
+      dist,
+      this.lastDefaultDist,
+      this.controls.minDistance,
+      this.controls.maxDistance
+    );
+
+    const curX = this.controls.target.x;
+    const curY = this.controls.target.y;
+    const curZ = this.controls.target.z;
+
+    const clampedX = THREE.MathUtils.clamp(curX, -maxX, maxX);
+    const clampedY = BOARD_CENTER_TARGET.y;
+    const clampedZ = THREE.MathUtils.clamp(curZ, -maxZ, maxZ);
+
+    const dx = clampedX - curX;
+    const dy = clampedY - curY;
+    const dz = clampedZ - curZ;
+
+    if (dx !== 0 || dy !== 0 || dz !== 0) {
+      this.controls.target.set(clampedX, clampedY, clampedZ);
+      this.camera.position.x += dx;
+      this.camera.position.y += dy;
+      this.camera.position.z += dz;
+      if (dx !== 0) {
+        this.oneFingerPan.pendingX = 0;
+        this.oneFingerPan.velX = 0;
+      }
+      if (dz !== 0) {
+        this.oneFingerPan.pendingZ = 0;
+        this.oneFingerPan.velZ = 0;
+      }
+    }
+  }
+
   private handleResize = () => {
     if (this.disposed) return;
     const width = Math.max(1, this.container.clientWidth || window.innerWidth);
@@ -624,9 +1067,11 @@ export class ChessSceneController {
 
     this.controls.minDistance = minDist;
     this.controls.maxDistance = maxDist;
-    this.controls.target.copy(BOARD_CENTER_TARGET);
     const clampedDist = THREE.MathUtils.clamp(defaultDist * ratio, minDist, maxDist);
-    this.getBoardCameraPosition(this.currentSide, clampedDist, this.camera.position);
+    this.getBoardCameraPosition(this.currentSide, clampedDist, _v1);
+    _v1.sub(BOARD_CENTER_TARGET);
+    this.camera.position.copy(this.controls.target).add(_v1);
+    this.clampCameraPanBounds();
     if (this.cameraGlide.active) {
       this.cameraGlide.target.copy(BOARD_CENTER_TARGET);
       this.getBoardCameraPosition(this.currentSide, defaultDist, this.cameraGlide.pos);
@@ -634,12 +1079,16 @@ export class ChessSceneController {
     this.controls.update();
   };
 
+  private getTargetPixelRatio(): number {
+    if (this.isSoftwareGl || this.quality !== 'high') return 1;
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    return Math.min(dpr, this.isLowTierHw ? 1.1 : 1.25);
+  }
+
   private applyPixelRatio() {
-    if (this.isSoftwareGl) {
-      this.renderer.setPixelRatio(1);
-    } else {
-      const maxDpr = this.quality === 'high' ? 1.25 : 1.0;
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxDpr));
+    const target = this.getTargetPixelRatio();
+    if (Math.abs(this.renderer.getPixelRatio() - target) > 0.001) {
+      this.renderer.setPixelRatio(target);
     }
   }
 
@@ -669,15 +1118,59 @@ export class ChessSceneController {
     return bestSq;
   }
 
+  private handleWheel = () => {
+    this.cameraGlide.active = false;
+    this.cancelOneFingerPan();
+  };
+
   private handlePointerDown = (e: PointerEvent) => {
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) {
+      if (e.button === 2) {
+        this.cameraGlide.active = false;
+        this.cancelOneFingerPan();
+        this.renderer.domElement.style.cursor = 'grabbing';
+      }
+      return;
+    }
+
+    // Halt any residual inertia immediately so camera responds crisply under the new touch
+    this.oneFingerPan.velX = 0;
+    this.oneFingerPan.velZ = 0;
+    this.oneFingerPan.pendingX = 0;
+    this.oneFingerPan.pendingZ = 0;
 
     this.activePointers.add(e.pointerId);
     if (this.activePointers.size >= 2) {
-      // Multi-touch pinch gesture -> cancel tap and guard release window
+      // Multi-touch pinch/pan gesture -> yield immediately to OrbitControls two-finger handling
       this.lastMultiTouchTime = performance.now();
       this.pointerDownInfo = null;
+      this.cancelOneFingerPan();
+      this.cameraGlide.active = false;
       return;
+    }
+
+    let startedOnPiece = false;
+    let startedOnLegalTarget = false;
+    if (e.pointerType !== 'mouse') {
+      const rect = this.renderer.domElement.getBoundingClientRect();
+      this.pointerNdc.x = ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+      this.pointerNdc.y = -((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
+      this.raycaster.setFromCamera(this.pointerNdc, this.camera);
+
+      const hasPlaneHit = this.raycaster.ray.intersectPlane(_boardPlane, _planeHit) !== null;
+      const exactPlaneSq = hasPlaneHit ? this.worldToSquare(_planeHit.x, _planeHit.z, 0.04) : null;
+      const hits = this.raycaster.intersectObjects(this.raycastTargets, false);
+
+      let hitPieceSq: string | null = null;
+      for (let i = 0; i < hits.length; i++) {
+        const pieceSq = this.hitProxyToSquare.get(hits[i].object);
+        if (pieceSq) {
+          hitPieceSq = pieceSq;
+          break;
+        }
+      }
+      startedOnPiece = Boolean((exactPlaneSq && this.pieceMap.has(exactPlaneSq)) || hitPieceSq);
+      startedOnLegalTarget = Boolean(exactPlaneSq && this.currentLegalTargets.has(exactPlaneSq));
     }
 
     this.pointerDownInfo = {
@@ -685,38 +1178,139 @@ export class ChessSceneController {
       y: e.clientY,
       time: performance.now(),
       pointerId: e.pointerId,
+      pointerType: e.pointerType,
+      movedBeyondTap: false,
+      startedOnPiece,
+      startedOnLegalTarget,
     };
   };
 
+  private handlePointerMove = (e: PointerEvent) => {
+    if (this.activePointers.size >= 2 || this.activeAnim?.isCapture) return;
+
+    // Continue active one-finger ground-plane pan with zero latency
+    if (this.oneFingerPan.active && this.oneFingerPan.pointerId === e.pointerId) {
+      const dx = e.clientX - this.oneFingerPan.lastX;
+      const dy = e.clientY - this.oneFingerPan.lastY;
+      this.oneFingerPan.lastX = e.clientX;
+      this.oneFingerPan.lastY = e.clientY;
+
+      if (dx !== 0 || dy !== 0) {
+        this.camera.updateMatrixWorld();
+        const dist = this.camera.position.distanceTo(this.controls.target);
+        const viewportH = this.renderer.domElement.clientHeight || window.innerHeight;
+        screenDeltaToGroundPan(
+          dx,
+          dy,
+          this.camera.matrixWorld,
+          this.camera.fov,
+          dist,
+          viewportH,
+          this._panDeltaTmp
+        );
+        this.oneFingerPan.pendingX += this._panDeltaTmp.x;
+        this.oneFingerPan.pendingZ += this._panDeltaTmp.z;
+      }
+      return;
+    }
+
+    const down = this.pointerDownInfo;
+    if (!down || down.pointerId !== e.pointerId) return;
+
+    const dist = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+    const heldMs = performance.now() - down.time;
+
+    if (down.pointerType === 'mouse') {
+      if (dist > 8) {
+        down.movedBeyondTap = true;
+        this.cameraGlide.active = false;
+        this.renderer.domElement.style.cursor = 'grabbing';
+      }
+      return;
+    }
+
+    // Touch gesture separation:
+    // - Piece touches stay strictly reserved for chess selection/capture (never trigger pan).
+    // - Empty battlefield / board touches smoothly enter one-finger pan once past tap deadzone.
+    if (down.startedOnPiece) {
+      if (dist > 22) {
+        down.movedBeyondTap = true;
+      }
+      return;
+    }
+
+    const panEngageThreshold = down.startedOnLegalTarget
+      ? heldMs >= 150
+        ? 7
+        : 13
+      : heldMs >= 110
+      ? 5
+      : 8;
+
+    if (dist > panEngageThreshold) {
+      down.movedBeyondTap = true;
+      this.cameraGlide.active = false;
+      this.oneFingerPan.active = true;
+      this.oneFingerPan.pointerId = e.pointerId;
+      // Anchor at exact current coordinate so crossing the threshold produces 0px camera snap
+      this.oneFingerPan.lastX = e.clientX;
+      this.oneFingerPan.lastY = e.clientY;
+      this.oneFingerPan.pendingX = 0;
+      this.oneFingerPan.pendingZ = 0;
+      this.oneFingerPan.velX = 0;
+      this.oneFingerPan.velZ = 0;
+    }
+  };
+
   private handlePointerCancel = (e: PointerEvent) => {
+    const wasMulti = this.activePointers.size >= 2;
     this.activePointers.delete(e.pointerId);
+    if (wasMulti) {
+      this.lastMultiTouchTime = performance.now();
+    }
+    if (e.pointerType === 'mouse') {
+      this.renderer.domElement.style.cursor = 'grab';
+    }
+    if (this.oneFingerPan.pointerId === e.pointerId) {
+      this.oneFingerPan.active = false;
+      this.oneFingerPan.pointerId = -1;
+    }
     if (this.pointerDownInfo?.pointerId === e.pointerId) {
       this.pointerDownInfo = null;
     }
   };
 
   private handlePointerUp = (e: PointerEvent) => {
+    const wasMulti = this.activePointers.size >= 2;
     this.activePointers.delete(e.pointerId);
+    if (e.pointerType === 'mouse') {
+      this.renderer.domElement.style.cursor = 'grab';
+    }
+    if (this.oneFingerPan.pointerId === e.pointerId) {
+      this.oneFingerPan.active = false;
+      this.oneFingerPan.pointerId = -1;
+    }
     const down = this.pointerDownInfo;
     this.pointerDownInfo = null;
 
-    if (!down || down.pointerId !== e.pointerId) return;
-    if (this.activePointers.size > 0) {
+    if (wasMulti || this.activePointers.size > 0) {
       this.lastMultiTouchTime = performance.now();
       return;
     }
+    if (!down || down.pointerId !== e.pointerId) return;
+    if (down.movedBeyondTap) return;
 
     const now = performance.now();
-    // Prevent accidental ghost taps right after lifting fingers from pinch-to-zoom
-    if (now - this.lastMultiTouchTime < 240) return;
+    // Guard against accidental hardware touch bounce immediately after multi-touch gestures
+    if (down.time - this.lastMultiTouchTime < 140) return;
 
     const dx = e.clientX - down.x;
     const dy = e.clientY - down.y;
     const dist = Math.hypot(dx, dy);
     const dt = now - down.time;
 
-    // Forgiving Android tap tolerance (ignores tiny finger roll/micro-movement)
-    if (dist > 24 || dt > 650) return;
+    const maxTapDist = down.pointerType === 'mouse' ? 8 : 22;
+    if (dist > maxTapDist || dt > 650) return;
     if (this.activeAnim) return;
 
     const rect = this.renderer.domElement.getBoundingClientRect();
@@ -818,11 +1412,15 @@ export class ChessSceneController {
 
   public setQuality(quality: GraphicsQuality) {
     this.quality = quality;
+    this.syncEffectsMotionAndQuality();
     if (this.isSoftwareGl) return;
     const high = quality === 'high';
     this.renderer.shadowMap.enabled = high;
     this.keyLight.castShadow = high;
-    if (high) this.shadowsDirty = true;
+    if (high) {
+      this.lastShadowUpdateMs = 0;
+      this.shadowsDirty = true;
+    }
     this.applyPixelRatio();
   }
 
@@ -830,10 +1428,15 @@ export class ChessSceneController {
     const anim = this.activeAnim;
     if (!anim) return;
 
+    if (invokeCallback && anim.isCapture && anim.defender) {
+      this.commitPendingCapture(anim);
+    }
+
     if (anim.duelCtx) {
       this.camera.position.copy(anim.duelCtx.savedCamPos);
       this.controls.target.copy(anim.duelCtx.savedTarget);
       this.controls.update();
+      this.clampCameraPanBounds();
     }
 
     const done = anim.onComplete;
@@ -841,6 +1444,7 @@ export class ChessSceneController {
     anim.defender = null;
     anim.rookRig = null;
     this.activeAnim = null;
+    this.controls.enabled = true;
 
     if (invokeCallback) {
       done();
@@ -849,14 +1453,18 @@ export class ChessSceneController {
 
   /**
    * Completely clears active animations, combat effects, piece rigs/pools, highlights,
-   * and input state before optionally rebuilding a fresh match board & resetting the camera.
+   * fallen graveyard corpses, persistent blood stains, and input state before rebuilding.
    */
   public resetGame(side: PieceColor, initialPieces?: BoardPiece[]) {
     if (this.disposed) return;
 
     this.matchEpoch++;
     this.abortActiveAnimation(false);
+    this.controls.enabled = true;
+    this.cancelOneFingerPan();
     this.combatEffects.clearActive();
+    this.aftermath.clear();
+    this.committedCaptureMoves.clear();
     this.cameraGlide.active = false;
     this.pointerDownInfo = null;
     this.activePointers.clear();
@@ -890,6 +1498,18 @@ export class ChessSceneController {
       this.syncBoard(initialPieces);
     }
     this.resetCamera(side, true);
+    this.lastShadowUpdateMs = 0;
+    this.shadowsDirty = true;
+  }
+
+  public rollbackAftermathToMove(maxMoveIndex: number) {
+    if (this.disposed) return;
+    for (const moveIdx of this.committedCaptureMoves) {
+      if (moveIdx > maxMoveIndex) {
+        this.committedCaptureMoves.delete(moveIdx);
+      }
+    }
+    this.aftermath.rollbackToMove(maxMoveIndex);
     this.shadowsDirty = true;
   }
 
@@ -916,17 +1536,60 @@ export class ChessSceneController {
     this.hitProxyToSquare.clear();
     this.raycastTargets.length = 0;
 
-    this.materials.switchCharacterSet(nextSet);
-    this.applyKingdomAtmosphere(nextSet);
     this.characterSet = nextSet;
+    this.materials.switchCharacterSet(nextSet);
+    this.applyArenaAtmosphere();
+    this.aftermath.rebuildForCharacterSet(nextSet);
 
     if (this.lastBoardPieces.length > 0) {
       this.syncBoard(this.lastBoardPieces);
     }
+    this.lastShadowUpdateMs = 0;
     this.shadowsDirty = true;
   }
 
+  public setPieceSkin(nextSkin: PieceSkinId) {
+    if (nextSkin === this.pieceSkin || this.disposed) return;
+    this.pieceSkin = nextSkin;
+    this.materials.switchPieceSkin(nextSkin);
+    this.lastShadowUpdateMs = 0;
+    this.shadowsDirty = true;
+  }
+
+  public setBoardTheme(nextTheme: BoardThemeId) {
+    if (nextTheme === this.boardTheme || this.disposed) return;
+    this.boardTheme = nextTheme;
+    this.applyArenaAtmosphere();
+    this.lastShadowUpdateMs = 0;
+    this.shadowsDirty = true;
+  }
+
+  public triggerCheckEffect(square: string) {
+    if (this.disposed || this.prefersReducedMotion || !square) return;
+    squareToWorld(square, _v1);
+    this.combatEffects.spawnCheckPulse(_v1);
+  }
+
+  public triggerOutcomeEffect(
+    kind: 'checkmate' | 'victory' | 'defeat' | 'draw',
+    square?: string | null
+  ) {
+    if (this.disposed || this.prefersReducedMotion) return;
+    if (square) {
+      squareToWorld(square, _v1);
+    } else {
+      _v1.set(0, 0, 0);
+    }
+    const accentNum = parseInt(CHARACTER_SETS[this.characterSet].accentHex.replace('#', ''), 16);
+    this.combatEffects.spawnOutcomeBurst(
+      _v1,
+      kind,
+      Number.isFinite(accentNum) ? accentNum : undefined
+    );
+  }
+
   public resetCamera(side: PieceColor, immediate = false) {
+    this.cancelOneFingerPan();
     this.currentSide = side;
     const { defaultDist, minDist, maxDist } = this.computeCameraDistances();
     this.lastDefaultDist = defaultDist;
@@ -948,7 +1611,7 @@ export class ChessSceneController {
 
   public adjustZoom(factor: number) {
     this.cameraGlide.active = false;
-    this.controls.target.copy(BOARD_CENTER_TARGET);
+    this.cancelOneFingerPan();
     _v1.copy(this.camera.position).sub(this.controls.target);
     const dist = _v1.length();
     const newDist = THREE.MathUtils.clamp(
@@ -958,20 +1621,32 @@ export class ChessSceneController {
     );
     _v1.setLength(newDist).add(this.controls.target);
     this.camera.position.copy(_v1);
+    this.clampCameraPanBounds();
     this.controls.update();
   }
 
   /**
-   * Smoothly zooms in within safe board-preserving bounds while keeping the entire board centered.
+   * Smoothly zooms in onto the selected character within safe battlefield pan bounds.
    */
-  public focusCharacter(_square: string) {
+  public focusCharacter(square: string) {
+    this.cancelOneFingerPan();
     const { minDist, maxDist, defaultDist } = this.computeCameraDistances();
     this.lastDefaultDist = defaultDist;
     this.controls.minDistance = minDist;
     this.controls.maxDistance = maxDist;
 
-    this.cameraGlide.target.copy(BOARD_CENTER_TARGET);
-    this.getBoardCameraPosition(this.currentSide, minDist, this.cameraGlide.pos);
+    const bounds = computeCameraPanBounds(minDist, defaultDist, minDist, maxDist);
+    let targetX = BOARD_CENTER_TARGET.x;
+    let targetZ = BOARD_CENTER_TARGET.z;
+    if (square) {
+      squareToWorld(square, _v1);
+      targetX = THREE.MathUtils.clamp(_v1.x, -bounds.maxX, bounds.maxX);
+      targetZ = THREE.MathUtils.clamp(_v1.z, -bounds.maxZ, bounds.maxZ);
+    }
+
+    this.cameraGlide.target.set(targetX, BOARD_CENTER_TARGET.y, targetZ);
+    this.getBoardCameraPosition(this.currentSide, minDist, _v2);
+    this.cameraGlide.pos.set(_v2.x + targetX, _v2.y, _v2.z + targetZ);
     this.cameraGlide.active = true;
   }
 
@@ -1248,8 +1923,11 @@ export class ChessSceneController {
     const defender = payload.captured ? this.pieceMap.get(capturedSq) ?? null : null;
     const rookRig = payload.rookFrom ? this.pieceMap.get(payload.rookFrom) ?? null : null;
 
+    const moveIndex = payload.moveIndex ?? ++this.fallbackCaptureSeq;
+
     if (!this.reusableMoveAnim) {
       this.reusableMoveAnim = {
+        moveIndex,
         payload,
         attacker,
         defender,
@@ -1267,6 +1945,7 @@ export class ChessSceneController {
     }
 
     const anim = this.reusableMoveAnim;
+    anim.moveIndex = moveIndex;
     anim.payload = payload;
     anim.attacker = attacker;
     anim.defender = defender;
@@ -1314,6 +1993,7 @@ export class ChessSceneController {
           hasClaimStart: false,
           characterSet: this.characterSet,
           defenderClass: payload.captured,
+          onBloodStain: this.handleBloodStain,
         };
       }
       const dCtx = this.reusableDuelCtx;
@@ -1325,6 +2005,7 @@ export class ChessSceneController {
       squareToWorld(capturedSq, dCtx.capturedPos);
       dCtx.characterSet = this.characterSet;
       dCtx.defenderClass = payload.captured;
+      dCtx.onBloodStain = this.handleBloodStain;
 
       _v1.copy(anim.toPos).sub(anim.fromPos);
       const dist = _v1.length();
@@ -1355,10 +2036,15 @@ export class ChessSceneController {
     }
 
     this.cameraGlide.active = false;
+    if (isCapture) {
+      this.cancelOneFingerPan();
+      this.controls.enabled = false;
+    }
     this.setRigMatrixAutoUpdate(attacker, true);
     if (defender) this.setRigMatrixAutoUpdate(defender, true);
     if (rookRig) this.setRigMatrixAutoUpdate(rookRig, true);
     this.activeAnim = anim;
+    this.lastShadowUpdateMs = 0;
     this.shadowsDirty = true;
   }
 
@@ -1419,7 +2105,9 @@ export class ChessSceneController {
       );
     }
 
-    this.shadowsDirty = true;
+    if (p >= 1 || this.adaptivePerf.tier < 2) {
+      this.shadowsDirty = true;
+    }
 
     if (p >= 1) {
       attacker.root.position.copy(anim.toPos);
@@ -1431,6 +2119,7 @@ export class ChessSceneController {
       }
 
       if (defender) {
+        this.commitPendingCapture(anim);
         defender.root.visible = false;
         if (defender.root.parent) {
           this.piecesGroup.remove(defender.root);
@@ -1471,6 +2160,7 @@ export class ChessSceneController {
         this.camera.position.copy(anim.duelCtx.savedCamPos);
         this.controls.target.copy(anim.duelCtx.savedTarget);
         this.controls.update();
+        this.clampCameraPanBounds();
       }
 
       const done = anim.onComplete;
@@ -1478,46 +2168,60 @@ export class ChessSceneController {
       anim.defender = null;
       anim.rookRig = null;
       this.activeAnim = null;
+      this.controls.enabled = true;
       done();
     }
   }
 
   private updateEnvironment(elapsed: number, dt: number) {
     if (!this.prefersReducedMotion) {
-      this.materials.waterNormalMap.offset.x =
-        (this.materials.waterNormalMap.offset.x + dt * 0.015) % 1;
-      this.materials.waterNormalMap.offset.y =
-        (this.materials.waterNormalMap.offset.y + dt * 0.01) % 1;
+      const envInterval =
+        this.quality === 'high' && this.adaptivePerf.tier === 0
+          ? 0
+          : this.adaptivePerf.tier === 2
+            ? 1 / 15
+            : 1 / 28;
+      this.envAccumDt += dt;
 
-      const flameInst = this.battlefield.brazierFlameInst;
-      const flameSpecs = this.battlefield.brazierFlameSpecs;
-      for (let i = 0; i < flameSpecs.length; i++) {
-        const spec = flameSpecs[i];
-        const f = 1 + Math.sin(elapsed * 9.5 + i * 1.7) * 0.13;
-        _flameDummy.position.set(spec.x, spec.y, spec.z);
-        _flameDummy.rotation.set(0, elapsed * 1.8 + i, 0);
-        _flameDummy.scale.set(spec.scaleXZ * f, spec.scaleY * f, spec.scaleXZ * f);
-        _flameDummy.updateMatrix();
-        flameInst.setMatrixAt(i, _flameDummy.matrix);
-      }
-      flameInst.instanceMatrix.needsUpdate = true;
+      if (envInterval === 0 || this.envAccumDt >= envInterval) {
+        const stepDt = this.envAccumDt;
+        this.envAccumDt = 0;
 
-      const posAttr = this.battlefield.embers.geometry.getAttribute(
-        'position'
-      ) as THREE.BufferAttribute;
-      const arr = posAttr.array as Float32Array;
-      const vels = this.battlefield.emberVelocities;
-      for (let i = 0; i < arr.length; i += 3) {
-        arr[i] += vels[i] * dt + Math.sin(elapsed + i) * 0.002;
-        arr[i + 1] += vels[i + 1] * dt;
-        arr[i + 2] += vels[i + 2] * dt;
-        if (arr[i + 1] > 6.0) {
-          arr[i] = (Math.random() - 0.5) * 16;
-          arr[i + 1] = 0.2;
-          arr[i + 2] = (Math.random() - 0.5) * 16;
+        this.materials.waterNormalMap.offset.x =
+          (this.materials.waterNormalMap.offset.x + stepDt * 0.015) % 1;
+        this.materials.waterNormalMap.offset.y =
+          (this.materials.waterNormalMap.offset.y + stepDt * 0.01) % 1;
+
+        const flameInst = this.battlefield.brazierFlameInst;
+        const flameSpecs = this.battlefield.brazierFlameSpecs;
+        for (let i = 0; i < flameSpecs.length; i++) {
+          const spec = flameSpecs[i];
+          const f = 1 + Math.sin(elapsed * 9.5 + i * 1.7) * 0.13;
+          _flameDummy.position.set(spec.x, spec.y, spec.z);
+          _flameDummy.rotation.set(0, elapsed * 1.8 + i, 0);
+          _flameDummy.scale.set(spec.scaleXZ * f, spec.scaleY * f, spec.scaleXZ * f);
+          _flameDummy.updateMatrix();
+          flameInst.setMatrixAt(i, _flameDummy.matrix);
         }
+        flameInst.instanceMatrix.needsUpdate = true;
+
+        const posAttr = this.battlefield.embers.geometry.getAttribute(
+          'position'
+        ) as THREE.BufferAttribute;
+        const arr = posAttr.array as Float32Array;
+        const vels = this.battlefield.emberVelocities;
+        for (let i = 0; i < arr.length; i += 3) {
+          arr[i] += vels[i] * stepDt + Math.sin(elapsed + i) * 0.002;
+          arr[i + 1] += vels[i + 1] * stepDt;
+          arr[i + 2] += vels[i + 2] * stepDt;
+          if (arr[i + 1] > 6.0) {
+            arr[i] = (Math.random() - 0.5) * 16;
+            arr[i + 1] = 0.2;
+            arr[i + 2] = (Math.random() - 0.5) * 16;
+          }
+        }
+        posAttr.needsUpdate = true;
       }
-      posAttr.needsUpdate = true;
 
       if (this.selectedRing.visible) {
         const sp = 1 + Math.sin(elapsed * 4.2) * 0.045;
@@ -1560,9 +2264,18 @@ export class ChessSceneController {
   private tick = () => {
     if (this.disposed || this.contextLost || this.isPausedHidden) return;
 
-    const tickStart = import.meta.env.DEV ? performance.now() : 0;
+    const tickStart = performance.now();
     const dt = Math.min(this.clock.getDelta(), 0.05);
     const elapsed = this.clock.elapsedTime;
+
+    if (!this.isSoftwareGl && !this.prefersReducedMotion && this.lastFrameTimeMs > 0) {
+      const prevTier = this.adaptivePerf.tier;
+      const nextTier = stepAdaptivePerfTier(this.adaptivePerf, tickStart - this.lastFrameTimeMs, dt);
+      if (nextTier !== prevTier) {
+        this.syncEffectsMotionAndQuality();
+      }
+    }
+    this.lastFrameTimeMs = tickStart;
 
     if (this.activeAnim) {
       this.updateActiveAnimation(dt);
@@ -1585,14 +2298,34 @@ export class ChessSceneController {
       }
     }
 
-    this.controls.update();
+    if (!this.activeAnim?.isCapture) {
+      if (
+        this.oneFingerPan.active ||
+        Math.abs(this.oneFingerPan.pendingX) > 1e-5 ||
+        Math.abs(this.oneFingerPan.pendingZ) > 1e-5 ||
+        Math.abs(this.oneFingerPan.velX) > 1e-4 ||
+        Math.abs(this.oneFingerPan.velZ) > 1e-4
+      ) {
+        this.stepOneFingerPan(dt);
+      }
+      this.controls.update();
+      this.clampCameraPanBounds();
+    }
     if (this.camera.position.y < 0.45) {
       this.camera.position.y = 0.45;
     }
 
     if (this.shadowsDirty && this.renderer.shadowMap.enabled) {
-      this.renderer.shadowMap.needsUpdate = true;
-      this.shadowsDirty = false;
+      const shadowThrottleMs = this.adaptivePerf.tier === 1 ? 48 : 30;
+      const canUpdateNow =
+        !this.activeAnim ||
+        this.lastShadowUpdateMs === 0 ||
+        (this.adaptivePerf.tier < 2 && tickStart - this.lastShadowUpdateMs >= shadowThrottleMs);
+      if (canUpdateNow) {
+        this.renderer.shadowMap.needsUpdate = true;
+        this.shadowsDirty = false;
+        this.lastShadowUpdateMs = tickStart;
+      }
     }
 
     this.renderer.render(this.scene, this.camera);
@@ -1623,8 +2356,10 @@ export class ChessSceneController {
 
     const dom = this.renderer.domElement;
     dom.removeEventListener('pointerdown', this.handlePointerDown);
+    dom.removeEventListener('pointermove', this.handlePointerMove);
     dom.removeEventListener('pointerup', this.handlePointerUp);
     dom.removeEventListener('pointercancel', this.handlePointerCancel);
+    dom.removeEventListener('wheel', this.handleWheel);
     window.removeEventListener('pointerup', this.handleWindowPointerCleanup);
     window.removeEventListener('pointercancel', this.handleWindowPointerCleanup);
     window.removeEventListener('blur', this.handleWindowBlur);
@@ -1652,6 +2387,8 @@ export class ChessSceneController {
 
     this.controls.dispose();
     this.combatEffects.dispose();
+    this.aftermath.dispose();
+    this.committedCaptureMoves.clear();
     this.sharedHighlightGeos.forEach((g) => g.dispose());
     this.sharedHighlightMats.forEach((m) => m.dispose());
     this.battlefield.dispose();
@@ -1662,6 +2399,10 @@ export class ChessSceneController {
     this.envRT = null;
     this.scene.environment = null;
     this.renderer.dispose();
+    this.activeAnim = null;
+    this.reusableMoveAnim = null;
+    this.reusableDuelCtx = null;
+    this.onCombatSoundCallback = undefined;
 
     if (dom.parentElement === this.container) {
       this.container.removeChild(dom);

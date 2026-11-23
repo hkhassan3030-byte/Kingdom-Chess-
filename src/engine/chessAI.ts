@@ -585,7 +585,9 @@ function scoreMoveOrder(
 ): number {
   if (ttBestSan && move.san === ttBestSan) return 1000000;
   let s = 0;
-  if (move.san.includes('#')) return 900000;
+  const san = move.san;
+  const lastChar = san.charCodeAt(san.length - 1);
+  if (lastChar === 35 /* '#' */) return 900000;
   if (move.captured) {
     // MVV-LVA: prioritize capturing high-value pieces with low-value pieces
     s += 100000 + 10 * PIECE_SCORE[move.captured] - PIECE_SCORE[move.piece];
@@ -593,9 +595,9 @@ function scoreMoveOrder(
   if (move.promotion) {
     s += 80000 + PIECE_SCORE[move.promotion as PieceType];
   }
-  if (killer0 && move.san === killer0) s += 45000;
-  else if (killer1 && move.san === killer1) s += 42000;
-  if (move.san.includes('+')) s += 30000;
+  if (killer0 && san === killer0) s += 45000;
+  else if (killer1 && san === killer1) s += 42000;
+  if (lastChar === 43 /* '+' */) s += 30000;
   if (move.flags.includes('k') || move.flags.includes('q')) s += 12000;
   // Center push preference for quiet ordering
   if (move.to === 'd4' || move.to === 'd5' || move.to === 'e4' || move.to === 'e5') {

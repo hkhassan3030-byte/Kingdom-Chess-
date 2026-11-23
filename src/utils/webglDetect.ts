@@ -24,3 +24,27 @@ export function isSoftwareGlRenderer(): boolean {
   }
   return cachedIsSoftwareGl;
 }
+
+let cachedIsLowTier: boolean | null = null;
+
+/**
+ * Heuristic detection for lower-core or lower-memory mobile GPUs.
+ * Safe in headless/SSR environments without full browser globals.
+ */
+export function isLowTierDevice(): boolean {
+  if (cachedIsLowTier !== null) {
+    return cachedIsLowTier;
+  }
+  try {
+    const nav =
+      typeof navigator !== 'undefined'
+        ? (navigator as Navigator & { deviceMemory?: number })
+        : null;
+    const cores = typeof nav?.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : 8;
+    const mem = typeof nav?.deviceMemory === 'number' ? nav.deviceMemory : 8;
+    cachedIsLowTier = cores <= 4 || mem <= 3;
+  } catch {
+    cachedIsLowTier = false;
+  }
+  return cachedIsLowTier;
+}

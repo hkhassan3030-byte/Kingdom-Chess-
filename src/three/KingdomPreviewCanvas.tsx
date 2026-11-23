@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { BOARD_ARENAS } from './arenaPresets';
 import { CHARACTER_SETS } from './characterSets';
 import {
   createCharacterGeometryBank,
@@ -8,11 +9,13 @@ import {
   type CharacterRig,
 } from './createCharacterPieces';
 import { createSceneMaterialBank } from './materials';
-import { isSoftwareGlRenderer } from '../utils/webglDetect';
-import type { CharacterSetId, GraphicsQuality, PieceType } from '../types/chess';
+import { isLowTierDevice, isSoftwareGlRenderer } from '../utils/webglDetect';
+import type { BoardThemeId, CharacterSetId, GraphicsQuality, PieceSkinId, PieceType } from '../types/chess';
 
 interface KingdomPreviewCanvasProps {
   characterSet: CharacterSetId;
+  pieceSkin?: PieceSkinId;
+  boardTheme?: BoardThemeId;
   quality?: GraphicsQuality;
   focusPiece?: PieceType;
 }
@@ -23,6 +26,9 @@ const KINGDOM_STAGE_BG: Record<CharacterSetId, number> = {
   inferno: 0x1a1114,
   shadow: 0x121024,
   celestial: 0x0f1a2e,
+  frostguard: 0x0d1b2a,
+  sylvan: 0x0f1c14,
+  storm: 0x10142a,
 };
 
 let _cachedFloorGlowCanvas: HTMLCanvasElement | null = null;
@@ -49,13 +55,19 @@ function createFloorGlowTexture(): THREE.CanvasTexture {
 
 export function KingdomPreviewCanvas({
   characterSet,
+  pieceSkin = 'royal-standard',
+  boardTheme = 'classic-citadel',
   quality = 'high',
   focusPiece = 'n',
 }: KingdomPreviewCanvasProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
-  const switchPresentationRef = useRef<((nextSet: CharacterSetId, nextPiece: PieceType) => void) | null>(null);
+  const switchPresentationRef = useRef<
+    ((nextSet: CharacterSetId, nextPiece: PieceType, nextSkin: PieceSkinId, nextArena: BoardThemeId) => void) | null
+  >(null);
   const applyQualityRef = useRef<((nextQuality: GraphicsQuality) => void) | null>(null);
   const initialSetRef = useRef<CharacterSetId>(characterSet);
+  const initialSkinRef = useRef<PieceSkinId>(pieceSkin);
+  const initialArenaRef = useRef<BoardThemeId>(boardTheme);
   const initialPieceRef = useRef<PieceType>(focusPiece);
   const qualityRef = useRef<GraphicsQuality>(quality);
   qualityRef.current = quality;
@@ -79,6 +91,7 @@ export function KingdomPreviewCanvas({
       let prefersReducedMotion = Boolean(motionQuery?.matches);
 
       const isSoftwareGl = isSoftwareGlRenderer();
+      const isLowTierHw = isLowTierDevice();
 
       const renderer = new THREE.WebGLRenderer({
         antialias: !isSoftwareGl,
@@ -91,8 +104,11 @@ export function KingdomPreviewCanvas({
       renderer.toneMappingExposure = 1.14;
 
       const applyDpr = (q: GraphicsQuality) => {
-        const maxDpr = isSoftwareGl ? 1 : q === 'balanced' ? 1 : 1.35;
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxDpr));
+        const maxDpr = isSoftwareGl ? 1 : q === 'balanced' ? 1 : isLowTierHw ? 1.1 : 1.25;
+        const target = Math.min(window.devicePixelRatio, maxDpr);
+        if (Math.abs(renderer.getPixelRatio() - target) > 0.001) {
+          renderer.setPixelRatio(target);
+        }
       };
       applyDpr(qualityRef.current);
       applyQualityRef.current = applyDpr;
@@ -148,6 +164,14 @@ export function KingdomPreviewCanvas({
       scene.add(rim);
 
       const materials = createSceneMaterialBank(renderer, initialSetRef.current);
+      if (initialSkinRef.current !== 'royal-standard') {
+        materials.switchPieceSkin(initialSkinRef.current);
+      }
+      if (initialArenaRef.current !== 'classic-citadel') {
+        materials.switchBoardTheme(initialArenaRef.current);
+        targetBgColor.setHex(BOARD_ARENAS[initialArenaRef.current].bg);
+        currentBgColor.copy(targetBgColor);
+      }
       const charGeos = createCharacterGeometryBank();
       const extraGeos: THREE.BufferGeometry[] = [];
       const extraMats: THREE.Material[] = [];
@@ -219,9 +243,11 @@ export function KingdomPreviewCanvas({
       const rigs: CharacterRig[] = [];
       let entranceScale = 1;
       let activeSet = initialSetRef.current;
+      let activeSkin = initialSkinRef.current;
+      let activeArena = initialArenaRef.current;
       let activePiece = initialPieceRef.current;
 
-      const buildShowcasePieces = (setId: CharacterSetId, piece: PieceType) => {
+      const buildShowcasePieces = (setId: CharacterSetId, piece: PieceType, arenaId: BoardThemeId) => {
         for (let i = 0; i < rigs.length; i++) {
           const geos = rigs[i].disposableGeos;
           for (let j = 0; j < geos.length; j++) geos[j].dispose();
@@ -231,7 +257,9 @@ export function KingdomPreviewCanvas({
 
         const cfg = CHARACTER_SETS[setId];
         targetAccentColor.set(cfg.accentHex);
-        targetBgColor.setHex(KINGDOM_STAGE_BG[setId]);
+        targetBgColor.setHex(
+          arenaId === 'classic-citadel' ? KINGDOM_STAGE_BG[setId] : BOARD_ARENAS[arenaId].bg
+        );
 
         if (piece === 'k') {
           const kingRig = createCharacterPiece('k', 'w', charGeos, materials, 0.25, setId);
@@ -266,15 +294,37 @@ export function KingdomPreviewCanvas({
         }
       };
 
-      buildShowcasePieces(initialSetRef.current, initialPieceRef.current);
+      buildShowcasePieces(initialSetRef.current, initialPieceRef.current, initialArenaRef.current);
 
-      switchPresentationRef.current = (nextSet: CharacterSetId, nextPiece: PieceType) => {
+      switchPresentationRef.current = (
+        nextSet: CharacterSetId,
+        nextPiece: PieceType,
+        nextSkin: PieceSkinId,
+        nextArena: BoardThemeId
+      ) => {
         if (disposed) return;
-        if (nextSet === activeSet && nextPiece === activePiece) return;
+        const setChanged = nextSet !== activeSet;
+        const pieceChanged = nextPiece !== activePiece;
+        const skinChanged = nextSkin !== activeSkin;
+        const arenaChanged = nextArena !== activeArena;
+        if (!setChanged && !pieceChanged && !skinChanged && !arenaChanged) return;
+
         activeSet = nextSet;
         activePiece = nextPiece;
-        materials.switchCharacterSet(nextSet);
-        buildShowcasePieces(nextSet, nextPiece);
+        activeSkin = nextSkin;
+        activeArena = nextArena;
+
+        if (setChanged) materials.switchCharacterSet(nextSet);
+        if (skinChanged) materials.switchPieceSkin(nextSkin);
+        if (arenaChanged) materials.switchBoardTheme(nextArena);
+
+        if (setChanged || pieceChanged) {
+          buildShowcasePieces(nextSet, nextPiece, nextArena);
+        } else {
+          targetBgColor.setHex(
+            nextArena === 'classic-citadel' ? KINGDOM_STAGE_BG[nextSet] : BOARD_ARENAS[nextArena].bg
+          );
+        }
       };
 
       // Interactive horizontal turntable drag (vertical scroll remains free on touch devices)
@@ -479,10 +529,10 @@ export function KingdomPreviewCanvas({
 
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
-      switchPresentationRef.current?.(characterSet, focusPiece);
+      switchPresentationRef.current?.(characterSet, focusPiece, pieceSkin, boardTheme);
     });
     return () => cancelAnimationFrame(raf);
-  }, [characterSet, focusPiece]);
+  }, [characterSet, focusPiece, pieceSkin, boardTheme]);
 
   useEffect(() => {
     applyQualityRef.current?.(quality);

@@ -1,14 +1,18 @@
 import { memo } from 'react';
-import { BookOpen, Play, Settings, Swords } from 'lucide-react';
+import { Award, BookOpen, Coins, Gem, Play, Settings, Swords } from 'lucide-react';
 import { HomeDioramaCanvas } from '../three/HomeDioramaCanvas';
 import { HomeResourceArea } from './HomeResourceArea';
 import { renderProfileAvatarIcon } from './ProfileModal';
 import type { GraphicsQuality, PlayerProfile } from '../types/chess';
+import type { CurrencyWallet } from '../types/progression';
 
 interface HomeScreenProps {
   quality: GraphicsQuality;
   profile: PlayerProfile;
+  wallet: CurrencyWallet;
+  claimableRewardsCount: number;
   onOpenProfile: () => void;
+  onOpenTreasury: () => void;
   onStartGame: () => void;
   onOpenModes: () => void;
   onOpenSettings: () => void;
@@ -18,7 +22,10 @@ interface HomeScreenProps {
 export const HomeScreen = memo(function HomeScreen({
   quality,
   profile,
+  wallet,
+  claimableRewardsCount,
   onOpenProfile,
+  onOpenTreasury,
   onStartGame,
   onOpenModes,
   onOpenSettings,
@@ -40,18 +47,18 @@ export const HomeScreen = memo(function HomeScreen({
       />
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 bottom-0 h-52 bg-gradient-to-t from-[#070b14]/94 via-[#070b14]/68 to-transparent sm:h-56"
+        className="pointer-events-none absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-[#070b14]/94 via-[#070b14]/68 to-transparent sm:h-60"
       />
 
       {/* Top Navigation & Title Region */}
       <div className="relative z-10 flex flex-col px-4 pt-[max(0.85rem,env(safe-area-inset-top))] sm:px-6 sm:pt-5">
-        {/* Top Bar: Profile Card (left) + Reserved Expandable Resource Zone (right) */}
-        <div className="flex items-start justify-between gap-3">
+        {/* Top Bar: Profile Card (left) + Coins & Gems Wallet (right) */}
+        <div className="flex items-start justify-between gap-2.5">
           <button
             type="button"
             onClick={onOpenProfile}
             aria-label={`Open commander profile for ${profile.name}`}
-            className="group relative flex min-h-[46px] min-w-0 max-w-[232px] flex-1 items-center gap-2.5 rounded-xl border border-amber-400/45 bg-gradient-to-b from-[#131c2e]/92 to-[#0b111d]/95 px-2.5 py-1.5 pr-3.5 text-left shadow-[0_10px_26px_rgba(0,0,0,0.52),inset_0_1px_0_rgba(255,232,175,0.2)] transition-transform duration-150 hover:border-amber-300/70 active:scale-[0.98] sm:max-w-[264px]"
+            className="group relative flex min-h-[46px] min-w-0 max-w-[215px] flex-1 items-center gap-2.5 rounded-xl border border-amber-400/45 bg-gradient-to-b from-[#131c2e]/92 to-[#0b111d]/95 px-2.5 py-1.5 pr-3 text-left shadow-[0_10px_26px_rgba(0,0,0,0.52),inset_0_1px_0_rgba(255,232,175,0.2)] transition-transform duration-150 hover:border-amber-300/70 active:scale-[0.98] sm:max-w-[264px]"
           >
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-300/50 bg-gradient-to-b from-amber-500/25 to-amber-900/35 text-amber-200 ring-1 ring-amber-400/20 shadow-[inset_0_1px_0_rgba(255,235,185,0.28)]">
               {renderProfileAvatarIcon(profile.avatarId, 'h-4 w-4')}
@@ -70,8 +77,26 @@ export const HomeScreen = memo(function HomeScreen({
             </div>
           </button>
 
-          {/* Reserved top-right zone for future Coins / Gems */}
-          <HomeResourceArea />
+          <HomeResourceArea
+            items={[
+              {
+                id: 'coins',
+                label: 'Coins',
+                value: wallet.coins.toLocaleString(),
+                icon: <Coins className="h-4 w-4 text-amber-300" />,
+                onClick: onOpenTreasury,
+                ariaLabel: `Coins: ${wallet.coins}. Open Royal Treasury`,
+              },
+              {
+                id: 'gems',
+                label: 'Gems',
+                value: wallet.gems.toLocaleString(),
+                icon: <Gem className="h-4 w-4 text-sky-300" />,
+                onClick: onOpenTreasury,
+                ariaLabel: `Gems: ${wallet.gems}. Open Royal Treasury`,
+              },
+            ]}
+          />
         </div>
 
         {/* Upper-Center Royal Title Lockup (compact & refined so the castle remains clear and dominant) */}
@@ -92,7 +117,7 @@ export const HomeScreen = memo(function HomeScreen({
       </div>
 
       {/* Bottom Thumb-Zone Action Dock */}
-      <div className="relative z-10 mx-auto flex w-full max-w-md flex-col gap-2.5 px-4 pb-[max(1.1rem,env(safe-area-inset-bottom))] sm:max-w-lg sm:px-5 sm:pb-8">
+      <div className="relative z-10 mx-auto flex w-full max-w-md flex-col gap-2.5 px-4 pb-[max(1.1rem,env(safe-area-inset-bottom))] sm:max-w-xl sm:px-5 sm:pb-8">
         <button
           type="button"
           onClick={onStartGame}
@@ -102,11 +127,25 @@ export const HomeScreen = memo(function HomeScreen({
           <span className="font-display">START BATTLE</span>
         </button>
 
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <button
+            type="button"
+            onClick={onOpenTreasury}
+            className="fantasy-btn-secondary relative flex min-h-[46px] items-center justify-center gap-1.5 rounded-xl border-amber-400/40 px-2.5 py-1.5 text-xs font-semibold tracking-wide sm:px-3 sm:text-sm"
+          >
+            <Award className="h-4 w-4 shrink-0 text-amber-300" />
+            <span className="whitespace-nowrap">Treasury</span>
+            {claimableRewardsCount > 0 && (
+              <span className="font-mono-tabular ml-0.5 rounded-md bg-amber-400 px-1.5 py-0.5 text-[10px] leading-none font-bold text-slate-950">
+                {claimableRewardsCount}
+              </span>
+            )}
+          </button>
+
           <button
             type="button"
             onClick={onOpenModes}
-            className="fantasy-btn-secondary flex min-h-[48px] flex-col items-center justify-center gap-1 rounded-xl border-amber-400/35 px-2 py-1.5 text-[11px] font-semibold tracking-wide sm:flex-row sm:gap-2 sm:px-3 sm:text-sm"
+            className="fantasy-btn-secondary flex min-h-[46px] items-center justify-center gap-1.5 rounded-xl border-amber-400/35 px-2.5 py-1.5 text-xs font-semibold tracking-wide sm:px-3 sm:text-sm"
           >
             <Swords className="h-4 w-4 shrink-0 text-amber-300" />
             <span className="whitespace-nowrap">Modes</span>
@@ -115,7 +154,7 @@ export const HomeScreen = memo(function HomeScreen({
           <button
             type="button"
             onClick={onOpenSettings}
-            className="fantasy-btn-secondary flex min-h-[48px] flex-col items-center justify-center gap-1 rounded-xl border-amber-400/35 px-2 py-1.5 text-[11px] font-semibold tracking-wide sm:flex-row sm:gap-2 sm:px-3 sm:text-sm"
+            className="fantasy-btn-secondary flex min-h-[46px] items-center justify-center gap-1.5 rounded-xl border-amber-400/35 px-2.5 py-1.5 text-xs font-semibold tracking-wide sm:px-3 sm:text-sm"
           >
             <Settings className="h-4 w-4 shrink-0 text-amber-300" />
             <span className="whitespace-nowrap">Settings</span>
@@ -124,7 +163,7 @@ export const HomeScreen = memo(function HomeScreen({
           <button
             type="button"
             onClick={onOpenHowToPlay}
-            className="fantasy-btn-secondary flex min-h-[48px] flex-col items-center justify-center gap-1 rounded-xl border-amber-400/35 px-2 py-1.5 text-[11px] font-semibold tracking-wide sm:flex-row sm:gap-2 sm:px-3 sm:text-sm"
+            className="fantasy-btn-secondary flex min-h-[46px] items-center justify-center gap-1.5 rounded-xl border-amber-400/35 px-2.5 py-1.5 text-xs font-semibold tracking-wide sm:px-3 sm:text-sm"
           >
             <BookOpen className="h-4 w-4 shrink-0 text-amber-300" />
             <span className="whitespace-nowrap">How To Play</span>
